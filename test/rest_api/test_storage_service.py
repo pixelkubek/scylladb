@@ -209,6 +209,18 @@ def test_storage_service_keyspace_scrub_mode(cql, this_dc, rest_api):
                 resp = rest_api.send("GET", f"storage_service/keyspace_scrub/{keyspace}", { "cf": f"{test_tables[0]}", "quarantine_mode": "YYY" })
                 assert resp.status_code == requests.codes.bad_request
 
+def test_storage_service_keyspace_scrub_default_validate(cql, this_dc, rest_api):
+    with new_test_keyspace(cql, f"WITH REPLICATION = {{ 'class' : 'NetworkTopologyStrategy', '{this_dc}' : 1 }}") as keyspace:
+        with new_test_table(cql, keyspace, "a int, PRIMARY KEY (a)") as t:
+            with scylla_inject_error(rest_api, "rest_api_keyspace_scrub_validation_error"):
+                cql.execute(f"INSERT INTO {t} (a) VALUES (42)")
+
+                resp = rest_api.send("POST", f"storage_service/keyspace_flush/{keyspace}")
+                resp.raise_for_status()
+                
+                resp = rest_api.send("GET", f"storage_service/keyspace_scrub/{keyspace}", { "cf": f"{t.split('.')[1]}" })
+                assert resp.content == b'3'
+
 def test_storage_service_keyspace_bad_param(cql, this_dc, rest_api):
     with new_test_keyspace(cql, f"WITH REPLICATION = {{ 'class' : 'NetworkTopologyStrategy', '{this_dc}' : 1 }}") as keyspace:
         # Url must include the keyspace param.

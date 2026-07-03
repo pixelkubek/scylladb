@@ -2156,6 +2156,10 @@ static future<compaction_result> scrub_sstables_validate_mode(compaction_descrip
     uint64_t validation_errors = 0;
     cdata.compaction_size = std::ranges::fold_left(descriptor.sstables | std::views::transform([] (auto& sst) { return sst->data_size(); }), int64_t(0), std::plus{});
 
+    utils::get_local_injector().inject("rest_api_keyspace_scrub_validation_error", [&] {
+        validation_errors++;
+    });
+
     for (const auto& sst : descriptor.sstables) {
         clogger.info("Scrubbing in validate mode {}", sst->get_filename());
 
