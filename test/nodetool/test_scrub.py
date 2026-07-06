@@ -137,6 +137,15 @@ def test_scrub_return_status(nodetool, status, cassandra_only):
         expected_request("GET", "/storage_service/keyspace_scrub/ks", params={"scrub_mode": "VALIDATE"},
                          response=status.value)])
 
+def test_scrub_validate_by_default(nodetool):
+    check_nodetool_fails_with(
+        nodetool,
+        ("scrub", "ks"),
+        {"expected_requests": [
+                expected_request("GET", "/storage_service/keyspaces", response=["ks"]),
+                expected_request("GET", "/storage_service/keyspace_scrub/ks",
+                                    response=scrub_status.validation_errors.value)]},
+        ["scrub failed: there are invalid sstables"])
 
 def test_scrub_validation_errors_exit_code(nodetool, scylla_only):
     nodetool("scrub", "ks", "--mode=VALIDATE", expected_requests=[
