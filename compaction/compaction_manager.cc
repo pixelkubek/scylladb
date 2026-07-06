@@ -7,6 +7,7 @@
  */
 
 #include "compaction_manager.hh"
+#include "compaction/task_manager_module.hh"
 #include "compaction_descriptor.hh"
 #include "compaction_strategy.hh"
 #include "compaction_backlog_manager.hh"
@@ -1493,6 +1494,27 @@ protected:
     }
 };
 
+class automatic_scrub_compaction_task_executor : public compaction_task_executor, public automatic_scrub_compation_task_impl {
+public:
+    automatic_scrub_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view& t)
+        : compaction_task_executor(mgr, do_throw_if_stopping, &t, compaction_type::Scrub, "Automatic scrub")
+        , automatic_scrub_compation_task_impl(mgr._task_manager_module, tasks::task_id::create_random_id(), mgr._task_manager_module->new_sequence_number(), t.schema()->ks_name(), t.schema()->cf_name(), "", tasks::task_id::create_null_id())
+    {}
+
+    virtual void abort() noexcept override {
+        return compaction_task_executor::abort(_as);
+    }
+protected:
+    virtual future<> run() override {
+        return perform();
+    }
+
+    virtual future<compaction_manager::compaction_stats_opt> do_run() override {
+        cmlog.warn("Auto scrub job");
+        co_return std::nullopt;
+    }
+};
+
 void compaction_manager::submit(compaction_group_view& t) {
     if (t.is_auto_compaction_disabled_by_user()) {
         return;
@@ -1506,6 +1528,21 @@ void compaction_manager::submit(compaction_group_view& t) {
     // OK to drop future.
     // waited via compaction_task_executor::compaction_done()
     (void)perform_compaction<regular_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, t).then_wrapped([gh = std::move(gh)] (auto f) { f.ignore_ready_future(); });
+}
+
+void compaction_manager::submit_auto_scrub(compaction_group_view& t) {
+    if (t.is_auto_compaction_disabled_by_user()) {
+        return;
+    }
+
+    auto gh = start_compaction(t);
+    if (!gh) {
+        return;
+    }
+
+    // OK to drop future.
+    // waited via compaction_task_executor::compaction_done()
+    (void)perform_compaction<automatic_scrub_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, t).then_wrapped([gh = std::move(gh)] (auto f) { f.ignore_ready_future(); });
 }
 
 bool compaction_manager::can_perform_regular_compaction(compaction_group_view& t) {

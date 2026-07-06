@@ -768,6 +768,28 @@ protected:
     virtual future<> run() override = 0;
 };
 
+class automatic_scrub_compation_task_impl : public compaction_task_impl {
+public:
+    automatic_scrub_compation_task_impl(tasks::task_manager::module_ptr module,
+            tasks::task_id id,
+            unsigned sequence_number,
+            std::string keyspace,
+            std::string table,
+            std::string entity,
+            tasks::task_id parent_id) noexcept
+        : compaction_task_impl(module, id, sequence_number, "compaction group", std::move(keyspace), std::move(table), std::move(entity), parent_id)
+    {}
+
+    virtual std::string type() const override {
+        return "automatic scrub compaction";
+    }
+
+    virtual tasks::is_internal is_internal() const noexcept override {
+        return tasks::is_internal::yes;
+    }
+protected:
+    virtual future<> run() override = 0;
+};
 } // namespace compaction
 
 template <>

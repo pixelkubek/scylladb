@@ -1677,6 +1677,8 @@ table::do_add_sstable_and_update_cache(compaction_group& cg, sstables::shared_ss
         if (trigger_compaction) {
             try_trigger_compaction(cg);
         }
+        tlogger.error("Trying auto scrub");
+        try_trigger_auto_scrub(cg);
         // Resetting sstable ptr to inform the caller the sstable has been loaded successfully.
         sst = nullptr;
     }), dht::partition_range::make({sst->get_first_decorated_key(), true}, {sst->get_last_decorated_key(), true}), [sst, schema = _schema] (const dht::decorated_key& key) {
@@ -2657,6 +2659,14 @@ void table::try_trigger_compaction(compaction_group& cg) noexcept {
     }
 }
 
+void table::try_trigger_auto_scrub(compaction_group& cg) noexcept {
+    try {
+        cg.trigger_auto_scrub();
+    } catch (...) {
+        tlogger.error("Failed to trigger auto scrub: {}", std::current_exception());
+    }
+}
+
 future<> table::flush_separator(std::optional<logstor::segment_sequence> seq_num) {
     if (!uses_logstor()) {
         co_return;
@@ -2708,6 +2718,16 @@ void compaction_group::trigger_compaction() {
       // FIXME: indentation
       for (auto view : all_views()) {
         _t._compaction_manager.submit(*view);
+      }
+    }
+}
+
+void compaction_group::trigger_auto_scrub() {
+    // But not if we're locked out or stopping
+    if (!_async_gate.is_closed()) {
+      // FIXME: indentation
+      for (auto view : all_views()) {
+        _t._compaction_manager.submit_auto_scrub(*view);
       }
     }
 }

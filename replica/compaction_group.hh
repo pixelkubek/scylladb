@@ -247,6 +247,7 @@ public:
     const std::vector<sstables::shared_sstable>& compacted_undeleted_sstables() const noexcept;
     // Triggers regular compaction.
     void trigger_compaction();
+    void trigger_auto_scrub();
     void trigger_logstor_compaction();
     bool compaction_disabled() const;
     future<unsigned> estimate_pending_compactions() const;

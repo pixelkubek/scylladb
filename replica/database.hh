@@ -1172,6 +1172,7 @@ public:
     void start_compaction();
     void trigger_compaction();
     void try_trigger_compaction(compaction_group& cg) noexcept;
+    void try_trigger_auto_scrub(compaction_group& cg) noexcept;
     void trigger_logstor_compaction();
     // Triggers offstrategy compaction, if needed, in the background.
     void trigger_offstrategy_compaction();

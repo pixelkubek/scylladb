@@ -53,6 +53,7 @@ class sstables_task_executor;
 class major_compaction_task_executor;
 class custom_compaction_task_executor;
 class regular_compaction_task_executor;
+class automatic_scrub_compaction_task_executor;
 class offstrategy_compaction_task_executor;
 class rewrite_sstables_compaction_task_executor;
 class rewrite_sstables_component_compaction_task_executor;
@@ -334,6 +335,7 @@ public:
 
     // Submit a table to be compacted.
     void submit(compaction::compaction_group_view& t);
+    void submit_auto_scrub(compaction::compaction_group_view& t);
 
     // Can regular compaction be performed in the given table
     bool can_perform_regular_compaction(compaction::compaction_group_view& t);
@@ -509,6 +511,7 @@ public:
     friend class compaction::split_compaction_task_executor;
     friend class compaction::custom_compaction_task_executor;
     friend class compaction::regular_compaction_task_executor;
+    friend class compaction::automatic_scrub_compaction_task_executor;
     friend class compaction::offstrategy_compaction_task_executor;
     friend class compaction::rewrite_sstables_compaction_task_executor;
     friend class compaction::rewrite_sstables_component_compaction_task_executor;
