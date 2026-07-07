@@ -2034,6 +2034,8 @@ private:
     future<compaction_result> validate_sstable(const sstables::shared_sstable& sst) {
         co_await coroutine::switch_to(_cm.maintenance_sg());
 
+        co_await _cm.set_auto_scrub_timepoint_for(sst->get_schema()->id(), db_clock::now());
+
         switch_state(state::active);
         std::exception_ptr ex;
         try {
@@ -2093,6 +2095,25 @@ future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sst
 
     co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
 }
+
+future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sstable_scrub_validate_mode_single(compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables) {
+    auto gh = start_compaction(t);
+    if (!gh) {
+        co_return compaction_stats_opt{};
+    }
+
+    // Collect and register all sstables as compacting while compaction is disabled, to avoid a race condition where
+    // regular compaction runs in between and picks the same files.
+    std::vector<sstables::shared_sstable> all_sstables{sst};
+    compacting_sstable_registration compacting(*this, get_compaction_state(&t));
+    co_await run_with_compaction_disabled(t, [&all_sstables, &compacting] () -> future<> {
+        compacting.register_compacting(all_sstables);
+        co_return;
+    }, "disabling compaction to run scrub validate");
+
+    co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
+}
+
 
 class cleanup_sstables_compaction_task_executor : public compaction_task_executor, public cleanup_compaction_task_impl {
     const compaction_type_options _cleanup_options;
@@ -2779,7 +2800,8 @@ future<> compaction_manager::maybe_schedule_auto_scrub(compaction_group_view& cg
 
         if (should_be_scrubbed) {
             cmlog.warn("SStable {} should be scrubbed", tid);
-            co_await set_auto_scrub_timepoint_for(tid, db_clock::now());
+            // co_await set_auto_scrub_timepoint_for(tid, db_clock::now());
+            co_await perform_sstable_scrub_validate_mode_single(cg, sst, tasks::task_info{}, quarantine_invalid_sstables::no);
         }
     }
 }
