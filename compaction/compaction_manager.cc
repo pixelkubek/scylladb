@@ -7,11 +7,13 @@
  */
 
 #include "compaction_manager.hh"
+#include "compaction/compaction_group_view.hh"
 #include "compaction/time_window_compaction_strategy.hh"
 #include "compaction_descriptor.hh"
 #include "compaction_strategy.hh"
 #include "compaction_backlog_manager.hh"
 #include "compaction_weight_registration.hh"
+#include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/sstables_manager.hh"
 #include <memory>
@@ -23,6 +25,7 @@
 #include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include "sstables/sstable_directory.hh"
+#include "tasks/types.hh"
 #include "utils/assert.hh"
 #include "utils/error_injection.hh"
 #include "utils/UUID_gen.hh"
@@ -31,6 +34,7 @@
 #include "db/config.hh"
 #include "tombstone_gc-internals.hh"
 #include <cmath>
+#include <vector>
 #include "utils/labels.hh"
 
 static logging::logger cmlog("compaction_manager");
@@ -1134,10 +1138,14 @@ std::function<void()> compaction_manager::auto_scrub_submission_callback() {
         auto now = gc_clock::now();
         for (auto& [table, state] : _compaction_state) {
             if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
-                perform_sstable_scrub(table, compaction_type_options, tasks::task_info info)
+                // perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, *table, tasks::task_id::create_random_id(), std::vector<sstables::shared_sstable>{}, compaction_manager::quarantine_invalid_sstables::no);
+                tasks::task_info info{};
+                compaction_group_view& t = *table;
+                compaction_manager::quarantine_invalid_sstables quarantine_sstables{false};
+                std::vector<sstables::shared_sstable> all_sstables{};
+                perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
             }
         }
-        reevaluate_postponed_compactions();
     };
 }
 
@@ -1160,7 +1168,7 @@ future<> compaction_manager::postponed_compactions_reevaluation() {
                     continue;
                 }
                 cmlog.debug("resubmitting postponed compaction for table {} [{}]", *t, fmt::ptr(t));
-                submit(*t);
+                submit(*t); // add automatic scrub job here
                 co_await coroutine::maybe_yield();
             }
         } catch (...) {
