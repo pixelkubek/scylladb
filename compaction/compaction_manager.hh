@@ -158,6 +158,7 @@ private:
 
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
+    timer<lowres_clock> _auto_scrub_submission_timer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;
     optimized_optional<abort_source::subscription> _early_abort_subscription;

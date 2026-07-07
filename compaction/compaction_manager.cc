@@ -1028,6 +1028,7 @@ compaction_manager::compaction_manager(config cfg, abort_source& as, tasks::task
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(std::move(cfg))
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
+    , _auto_scrub_submission_timer(compaction_sg(), auto_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), static_shares(), _cfg.max_shares.get(), [this] () -> float {
         _last_backlog = backlog();
         auto b = _last_backlog / available_memory();
@@ -1061,6 +1062,7 @@ compaction_manager::compaction_manager(tasks::task_manager& tm)
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(config{ .available_memory = 1 })
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
+    , _auto_scrub_submission_timer(compaction_sg(), auto_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), 1, std::nullopt, [] () -> float { return 1.0; }))
     , _backlog_manager(_compaction_controller)
     , _update_compaction_static_shares_action([] { return make_ready_future<>(); })
@@ -1116,6 +1118,8 @@ void compaction_manager::enable() {
 
     _compaction_submission_timer.cancel();
     _compaction_submission_timer.arm_periodic(periodic_compaction_submission_interval());
+    _auto_scrub_submission_timer.cancel();
+    _auto_scrub_submission_timer.arm_periodic(auto_scrub_submission_interval());
     throwing_assert(!_waiting_reevaluation);
     _waiting_reevaluation.emplace(postponed_compactions_reevaluation());
     cmlog.info("Enabled");
@@ -1130,22 +1134,6 @@ std::function<void()> compaction_manager::compaction_submission_callback() {
             }
         }
         reevaluate_postponed_compactions();
-    };
-}
-
-std::function<void()> compaction_manager::auto_scrub_submission_callback() {
-    return [this] () mutable {
-        auto now = gc_clock::now();
-        for (auto& [table, state] : _compaction_state) {
-            if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
-                // perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, *table, tasks::task_id::create_random_id(), std::vector<sstables::shared_sstable>{}, compaction_manager::quarantine_invalid_sstables::no);
-                tasks::task_info info{};
-                compaction_group_view& t = *table;
-                compaction_manager::quarantine_invalid_sstables quarantine_sstables{false};
-                std::vector<sstables::shared_sstable> all_sstables{};
-                perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
-            }
-        }
     };
 }
 
@@ -1272,6 +1260,7 @@ future<> compaction_manager::drain() {
     ++_disabled_state_count;
 
     _compaction_submission_timer.cancel();
+    _auto_scrub_submission_timer.cancel();
     // Stop ongoing compactions, if the request has not been sent already and wait for them to stop.
     co_await stop_ongoing_compactions("drain");
     co_await stop_postponed_compactions();
@@ -2749,5 +2738,25 @@ compaction_backlog_manager::~compaction_backlog_manager() {
 compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_group_view& t) {
     return t.get_backlog_tracker();
 }
+
+
+std::function<void()> compaction_manager::auto_scrub_submission_callback() {
+    return [this] () mutable {
+        auto now = gc_clock::now();
+        cmlog.warn("Running");
+        for (auto& [table, state] : _compaction_state) {
+            if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
+                (void)perform_sstable_scrub_validate_mode(*table, tasks::task_info{}, quarantine_invalid_sstables::no);
+                // perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, *table, tasks::task_id::create_random_id(), std::vector<sstables::shared_sstable>{}, compaction_manager::quarantine_invalid_sstables::no);
+                // tasks::task_info info{};
+                // compaction_group_view& t = *table;
+                // compaction_manager::quarantine_invalid_sstables quarantine_sstables{false};
+                // std::vector<sstables::shared_sstable> all_sstables{};
+                // (void)perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
+            }
+        }
+    };
+}
+
 
 }
