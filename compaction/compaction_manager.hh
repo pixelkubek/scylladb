@@ -17,6 +17,7 @@
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/condition-variable.hh>
 #include <seastar/core/rwlock.hh>
+#include "compaction/compaction_group_view.hh"
 #include "sstables/shared_sstable.hh"
 #include "utils/exponential_backoff_retry.hh"
 #include "utils/updateable_value.hh"
@@ -150,6 +151,10 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
+
+    future<std::optional<db_clock::time_point>> get_auto_scrub_timepoint_for(table_id tid);
+    future<> set_auto_scrub_timepoint_for(table_id tid, db_clock::time_point);
+    future<> maybe_schedule_auto_scrub(compaction_group_view& cg);
     std::function<void()> auto_scrub_submission_callback();
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.

@@ -13,11 +13,14 @@
 #include "compaction_strategy.hh"
 #include "compaction_backlog_manager.hh"
 #include "compaction_weight_registration.hh"
+#include "db_clock.hh"
+#include "schema/schema_fwd.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/sstables_manager.hh"
 #include <memory>
 #include <fmt/ranges.h>
+#include <optional>
 #include <seastar/core/future.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/coroutine.hh>
@@ -2739,21 +2742,63 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
     return t.get_backlog_tracker();
 }
 
+future<std::optional<db_clock::time_point>> compaction_manager::get_auto_scrub_timepoint_for(table_id tid) {
+    auto permit = _sys_ks.get_permit();
+    if (!permit) {
+        co_return std::nullopt;
+    }
+
+    co_return co_await permit->auto_scrub_get_entry(tid);
+}
+
+future<> compaction_manager::set_auto_scrub_timepoint_for(table_id tid, db_clock::time_point ts) {
+    auto permit = _sys_ks.get_permit();
+    if (!permit) {
+        co_return;
+    }
+
+    auto entry = co_await permit->auto_scrub_get_entry(tid);
+    if (entry.has_value()) {
+        co_await permit->auto_scrub_create_entry(tid, ts);
+    } else {
+        co_await permit->auto_scrub_update_entry(tid, ts);
+    }
+}
+
+future<> compaction_manager::maybe_schedule_auto_scrub(compaction_group_view& cg) {
+    auto sstables = co_await get_all_sstables(cg);
+    
+    auto now = db_clock::now();
+    for (const auto& sst : sstables) {
+        auto tid = sst->get_schema()->id();
+        auto last_auto_scrub = co_await get_auto_scrub_timepoint_for(tid);
+
+        cmlog.warn("SStable {} last scrubbed at {}", tid, last_auto_scrub);
+
+        bool should_be_scrubbed = !last_auto_scrub.has_value() || now - *last_auto_scrub > std::chrono::seconds(20);
+
+        if (should_be_scrubbed) {
+            cmlog.warn("SStable {} should be scrubbed", tid);
+            co_await set_auto_scrub_timepoint_for(tid, db_clock::now());
+        }
+    }
+}
 
 std::function<void()> compaction_manager::auto_scrub_submission_callback() {
     return [this] () mutable {
-        auto now = gc_clock::now();
+        // auto now = gc_clock::now();
         cmlog.warn("Running");
         for (auto& [table, state] : _compaction_state) {
-            if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
-                (void)perform_sstable_scrub_validate_mode(*table, tasks::task_info{}, quarantine_invalid_sstables::no);
+            // if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
+                // (void)perform_sstable_scrub_validate_mode(*table, tasks::task_info{}, quarantine_invalid_sstables::no);
                 // perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, tasks::task_info{}, *table, tasks::task_id::create_random_id(), std::vector<sstables::shared_sstable>{}, compaction_manager::quarantine_invalid_sstables::no);
                 // tasks::task_info info{};
                 // compaction_group_view& t = *table;
                 // compaction_manager::quarantine_invalid_sstables quarantine_sstables{false};
                 // std::vector<sstables::shared_sstable> all_sstables{};
                 // (void)perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
-            }
+            // }
+            (void)maybe_schedule_auto_scrub(*table);
         }
     };
 }

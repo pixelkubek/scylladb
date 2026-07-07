@@ -22,6 +22,7 @@
 #include "cdc/log.hh"
 #include "cql3/untyped_result_set.hh"
 #include "cql3/query_processor.hh"
+#include "db_clock.hh"
 #include "locator/host_id.hh"
 #include "locator/tablets.hh"
 #include "partition_slice_builder.hh"
@@ -3552,6 +3553,36 @@ future<> system_keyspace::sstables_registry_list(table_id tid, locator::host_id 
         co_await consumer(std::move(status), std::move(state), std::move(desc));
         co_return stop_iteration::no;
     });
+}
+
+
+future<> system_keyspace::auto_scrub_create_entry(table_id tid, db_clock::time_point ts) {
+    static const auto req = format("INSERT INTO system.{} (table_id, scrub_timestamp) VALUES (?, ?)", AUTO_SCRUB);
+    slogger.trace("Inserting {}.{} into {}", tid, ts, AUTO_SCRUB);
+    co_await execute_cql(req, tid.id, ts).discard_result();
+}
+
+future<> system_keyspace::auto_scrub_update_entry(table_id tid, db_clock::time_point ts) {
+    static const auto req = format("UPDATE system.{} SET scrub_timestamp = ? WHERE table_id = ?", AUTO_SCRUB);
+    slogger.trace("Updating {} -> scrub_timestamp={} in {}", tid, ts, AUTO_SCRUB);
+    co_await execute_cql(req, ts, tid.id).discard_result();
+}
+
+future<> system_keyspace::auto_scrub_delete_entry(table_id tid) {
+    static const auto req = format("DELETE FROM system.{} WHERE table_id = ?", AUTO_SCRUB);
+    slogger.trace("Removing {} from {}", tid, AUTO_SCRUB);
+    co_await execute_cql(req, tid.id).discard_result();
+}
+
+future<std::optional<db_clock::time_point>> system_keyspace::auto_scrub_get_entry(table_id tid) {
+    static const auto req = format("SELECT scrub_timestamp FROM system.{} WHERE table_id = ?", AUTO_SCRUB, tid);
+    auto response = co_await execute_cql(req, tid.id);
+    
+    if (response->empty()) {
+        co_return std::nullopt;
+    }
+
+    co_return response->one().get_as<db_clock::time_point>("scrub_timestamp");
 }
 
 future<service::topology_request_state> system_keyspace::get_topology_request_state(utils::UUID id, bool require_entry) {

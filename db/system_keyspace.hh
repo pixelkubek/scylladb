@@ -681,6 +681,11 @@ public:
     using sstable_registry_entry_consumer = sstables::sstables_registry::entry_consumer;
     future<> sstables_registry_list(table_id tid, locator::host_id node_owner, sstable_registry_entry_consumer consumer);
 
+    future<> auto_scrub_create_entry(table_id tid, db_clock::time_point ts);
+    future<> auto_scrub_update_entry(table_id tid, db_clock::time_point ts);
+    future<> auto_scrub_delete_entry(table_id tid);
+    future<std::optional<db_clock::time_point>> auto_scrub_get_entry(table_id tid);
+
     future<std::optional<sstring>> load_group0_upgrade_state();
     future<> save_group0_upgrade_state(sstring);
 
