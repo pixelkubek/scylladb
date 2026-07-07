@@ -206,6 +206,7 @@ public:
     static constexpr auto CDC_STREAMS_STATE = "cdc_streams_state";
     static constexpr auto CDC_STREAMS_HISTORY = "cdc_streams_history";
     static constexpr auto TABLETS = "tablets";
+    static constexpr auto AUTO_SCRUB = "auto_scrub";
     static constexpr auto SERVICE_LEVELS_V2 = "service_levels_v2";
     static constexpr auto VIEW_BUILD_STATUS_V2 = "view_build_status_v2";
     static constexpr auto DICTS = "dicts";
@@ -262,6 +263,7 @@ public:
     static schema_ptr cdc_streams_state();
     static schema_ptr cdc_streams_history();
     static schema_ptr tablets();
+    static schema_ptr auto_scrub();
     static schema_ptr service_levels_v2();
     static schema_ptr view_build_status_v2();
     static schema_ptr dicts();

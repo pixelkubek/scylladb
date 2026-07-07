@@ -9,6 +9,7 @@
 #include <fmt/ranges.h>
 #include <seastar/coroutine/maybe_yield.hh>
 
+#include "schema/schema.hh"
 #include "types/types.hh"
 #include "types/tuple.hh"
 #include "types/list.hh"
@@ -101,6 +102,18 @@ schema_ptr make_tablets_schema() {
         builder
             .with_column("raft_group_id", uuid_type);
     }
+
+    return builder
+            .with_hash_version()
+            .build();
+}
+
+schema_ptr make_auto_scrub_schema() {
+    auto id = generate_legacy_id(db::system_keyspace::NAME, db::system_keyspace::AUTO_SCRUB);
+    auto builder = schema_builder(this_smp_shard_count(), db::system_keyspace::NAME, db::system_keyspace::AUTO_SCRUB, id);
+    builder
+            .with_column("table_id", uuid_type, column_kind::partition_key)
+            .with_column("scrub_timestamp", timestamp_type, column_kind::regular_column);
 
     return builder
             .with_hash_version()

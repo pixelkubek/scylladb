@@ -19,6 +19,7 @@
 #include <seastar/core/loop.hh>
 #include <seastar/core/on_internal_error.hh>
 #include "system_keyspace.hh"
+#include "cdc/log.hh"
 #include "cql3/untyped_result_set.hh"
 #include "cql3/query_processor.hh"
 #include "locator/host_id.hh"
@@ -1170,6 +1171,11 @@ schema_ptr system_keyspace::tablets() {
     return schema;
 }
 
+schema_ptr system_keyspace::auto_scrub() {
+    static thread_local auto schema = replica::make_auto_scrub_schema();
+    return schema;
+}
+
 schema_ptr system_keyspace::service_levels_v2() {
     static thread_local auto schema = [] {
         auto id = generate_legacy_id(NAME, SERVICE_LEVELS_V2);
@@ -2272,7 +2278,7 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
                     cdc_local(),
                     raft(), raft_snapshots(), raft_snapshot_config(), group0_history(), discovery(),
                     topology(), cdc_generations_v3(), topology_requests(), service_levels_v2(), view_build_status_v2(),
-                    dicts(), view_building_tasks(), client_routes(), cdc_streams_state(), cdc_streams_history()
+                    dicts(), view_building_tasks(), client_routes(), cdc_streams_state(), cdc_streams_history(), auto_scrub()
     });
 
     if (cfg.check_experimental(db::experimental_features_t::feature::BROADCAST_TABLES)) {
