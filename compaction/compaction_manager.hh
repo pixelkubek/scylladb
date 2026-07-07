@@ -246,7 +246,7 @@ private:
 
     using quarantine_invalid_sstables = compaction_type_options::scrub::quarantine_invalid_sstables;
     future<compaction_stats_opt> perform_sstable_scrub_validate_mode(compaction::compaction_group_view& t, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables);
-    future<compaction_stats_opt> perform_sstable_scrub_validate_mode_single(compaction::compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables);
+    future<compaction_stats_opt> perform_sstable_scrub_validate_mode_single(compaction::compaction_group_view& t, std::vector<sstables::shared_sstable> ssts, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables);
     future<> update_static_shares(float shares);
 
     using get_candidates_func = std::function<future<std::vector<sstables::shared_sstable>>()>;

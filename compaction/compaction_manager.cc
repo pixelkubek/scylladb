@@ -2096,7 +2096,7 @@ future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sst
     co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
 }
 
-future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sstable_scrub_validate_mode_single(compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables) {
+future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sstable_scrub_validate_mode_single(compaction_group_view& t, std::vector<sstables::shared_sstable> ssts, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
         co_return compaction_stats_opt{};
@@ -2104,14 +2104,13 @@ future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sst
 
     // Collect and register all sstables as compacting while compaction is disabled, to avoid a race condition where
     // regular compaction runs in between and picks the same files.
-    std::vector<sstables::shared_sstable> all_sstables{sst};
     compacting_sstable_registration compacting(*this, get_compaction_state(&t));
-    co_await run_with_compaction_disabled(t, [&all_sstables, &compacting] () -> future<> {
-        compacting.register_compacting(all_sstables);
+    co_await run_with_compaction_disabled(t, [&ssts, &compacting] () -> future<> {
+        compacting.register_compacting(ssts);
         co_return;
     }, "disabling compaction to run scrub validate");
 
-    co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(all_sstables), quarantine_sstables);
+    co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(ssts), quarantine_sstables);
 }
 
 
@@ -2790,7 +2789,9 @@ future<> compaction_manager::maybe_schedule_auto_scrub(compaction_group_view& cg
     auto sstables = co_await get_all_sstables(cg);
     
     auto now = db_clock::now();
-    for (const auto& sst : sstables) {
+
+    std::vector<sstables::shared_sstable> ssts;
+    for (auto& sst : sstables) {
         auto tid = sst->get_schema()->id();
         auto last_auto_scrub = co_await get_auto_scrub_timepoint_for(tid);
 
@@ -2801,8 +2802,11 @@ future<> compaction_manager::maybe_schedule_auto_scrub(compaction_group_view& cg
         if (should_be_scrubbed) {
             cmlog.warn("SStable {} should be scrubbed", tid);
             // co_await set_auto_scrub_timepoint_for(tid, db_clock::now());
-            co_await perform_sstable_scrub_validate_mode_single(cg, sst, tasks::task_info{}, quarantine_invalid_sstables::no);
+            ssts.emplace_back(std::move(sst));
         }
+    }
+    if (!ssts.empty()) {
+        co_await perform_sstable_scrub_validate_mode_single(cg, ssts, tasks::task_info{}, quarantine_invalid_sstables::no);
     }
 }
 
