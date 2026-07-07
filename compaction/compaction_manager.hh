@@ -150,9 +150,11 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
+    std::function<void()> auto_scrub_submission_callback();
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
     static constexpr std::chrono::seconds periodic_compaction_submission_interval() { return std::chrono::seconds(3600); }
+    static constexpr std::chrono::seconds auto_scrub_submission_interval() { return std::chrono::seconds(15); }
 
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;

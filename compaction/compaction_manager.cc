@@ -7,6 +7,7 @@
  */
 
 #include "compaction_manager.hh"
+#include "compaction/time_window_compaction_strategy.hh"
 #include "compaction_descriptor.hh"
 #include "compaction_strategy.hh"
 #include "compaction_backlog_manager.hh"
@@ -1128,6 +1129,18 @@ std::function<void()> compaction_manager::compaction_submission_callback() {
     };
 }
 
+std::function<void()> compaction_manager::auto_scrub_submission_callback() {
+    return [this] () mutable {
+        auto now = gc_clock::now();
+        for (auto& [table, state] : _compaction_state) {
+            if (now - state.last_automatic_scrub > auto_scrub_submission_interval()) {
+                perform_sstable_scrub(table, compaction_type_options, tasks::task_info info)
+            }
+        }
+        reevaluate_postponed_compactions();
+    };
+}
+
 future<> compaction_manager::postponed_compactions_reevaluation() {
      while (true) {
         co_await _postponed_reevaluation.when();
@@ -2005,6 +2018,7 @@ public:
 protected:
     virtual future<compaction_manager::compaction_stats_opt> do_run() override {
         compaction_stats stats{};
+        cmlog.warn("Validate compaction");
 
         while (!_sstables.empty() && can_proceed()) {
             auto sst = consume_sstable();

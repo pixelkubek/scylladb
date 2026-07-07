@@ -52,6 +52,7 @@ struct compaction_state {
     compaction::owned_ranges_ptr owned_ranges_ptr;
 
     gc_clock::time_point last_regular_compaction;
+    gc_clock::time_point last_automatic_scrub;
 
     explicit compaction_state(compaction_group_view& t);
     compaction_state(compaction_state&&) = delete;
