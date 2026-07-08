@@ -2602,6 +2602,7 @@ future<> sstable::write_components(
             sstlog.info("write_components_writer_created: message received");
         }).get();
         mr.consume_in_thread(std::move(wr));
+        // Update last write
     }).finally([this] {
         assert_large_data_handler_is_running();
     });

@@ -18,6 +18,7 @@
 #include <seastar/core/condition-variable.hh>
 #include <seastar/core/rwlock.hh>
 #include "compaction/compaction_group_view.hh"
+#include "db_clock.hh"
 #include "sstables/shared_sstable.hh"
 #include "utils/exponential_backoff_retry.hh"
 #include "utils/updateable_value.hh"

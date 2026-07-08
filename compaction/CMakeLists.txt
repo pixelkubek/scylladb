@@ -9,7 +9,8 @@ target_sources(compaction
     leveled_compaction_strategy.cc
     size_tiered_compaction_strategy.cc
     task_manager_module.cc
-    time_window_compaction_strategy.cc)
+    time_window_compaction_strategy.cc
+    compaction_auto_scrub.cc)
 target_include_directories(compaction
   PUBLIC
     ${CMAKE_SOURCE_DIR})
