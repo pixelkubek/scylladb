@@ -2,7 +2,10 @@
 
 #include "db/system_keyspace.hh"
 #include "utils/pluggable.hh"
-#include "sstables/sstables.hh"
+
+namespace sstables {
+    class sstable;
+}
 
 namespace compaction {
 
@@ -12,13 +15,19 @@ class automatic_scrub_manager {
     sstables::sstable& _sst;
 
 public:
-    explicit automatic_scrub_manager(db::system_keyspace& sys_ks, sstables::sstable& sst);
+    explicit automatic_scrub_manager(sstables::sstable& sst);
+
+    void plug(db::system_keyspace&);
+    future<> unplug();
+    bool plugged() const noexcept;
     
     future<> enable();
 
     future<> update_timestamp(db_clock::time_point tp);
 
     future<std::optional<db_clock::time_point>> get_timestamp();
+
+    bool enabled() const noexcept;
 
     future<> disable();
 

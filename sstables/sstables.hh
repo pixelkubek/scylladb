@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "compaction/compaction_auto_scrub.hh"
 #include "version.hh"
 #include "shared_sstable.hh"
 #include "open_info.hh"
@@ -1192,6 +1193,9 @@ public:
             bool update_sstable_id);
     // Must be called in a seastar thread
     void write_component_with_metadata(component_type type, scylla_metadata metadata);
+
+public:
+    compaction::automatic_scrub_manager _automatic_scrub_manager;
 };
 
 // Validate checksums

@@ -2792,7 +2792,9 @@ future<> compaction_manager::maybe_schedule_auto_scrub(compaction_group_view& cg
 
     std::vector<sstables::shared_sstable> ssts;
     for (auto& sst : sstables) {
-        auto tid = sst->get_schema()->id();
+        if (!sst->_automatic_scrub_manager.plugged()) {
+            sst->_automatic_scrub_manager.plug(_sys);
+        }
         auto last_auto_scrub = co_await get_auto_scrub_timepoint_for(tid);
 
         cmlog.warn("SStable {} last scrubbed at {}", tid, last_auto_scrub);

@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "db_clock.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -2602,7 +2603,7 @@ future<> sstable::write_components(
             sstlog.info("write_components_writer_created: message received");
         }).get();
         mr.consume_in_thread(std::move(wr));
-        // Update last write
+        _automatic_scrub_manager.update_timestamp(db_clock::now()).get();
     }).finally([this] {
         assert_large_data_handler_is_running();
     });
@@ -3986,6 +3987,7 @@ sstable::sstable(schema_ptr schema,
     , _corrupt_data_handler(corrupt_data_handler)
     , _manager(manager)
     , _ignore_component_digest_mismatch(_manager.get_config().ignore_component_digest_mismatch)
+    , _automatic_scrub_manager(*this)
 {
     manager.add(this);
 }
