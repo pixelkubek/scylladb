@@ -1284,6 +1284,7 @@ future<std::optional<uint32_t>> sstable::maybe_reread_scylla_file_digest() const
     auto size = co_await f.size();
 
     if (size < digest_size) {
+        co_await f.close();
         throw_malformed_sstable_exception(fmt::format("missing digest in {}", get_filename()));
     }
 
@@ -1340,8 +1341,6 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
 }
 
 future<> sstable::read_validate_component(component_type type) {
-    auto computed_digest = co_await compute_component_file_digest(type);
-
     if (type == component_type::Scylla) {
         // Refresh Scylla component digest from disk in case the corruption occured in the digest itself.
         auto disk_digest = co_await maybe_reread_scylla_file_digest();
@@ -1356,6 +1355,7 @@ future<> sstable::read_validate_component(component_type type) {
         }
     }
 
+    auto computed_digest = co_await compute_component_file_digest(type);
     validate_component_digest(type, computed_digest);
 }
 
