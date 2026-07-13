@@ -1235,7 +1235,7 @@ struct validate_checksums_result {
     validate_checksums_status status;
     bool has_digest;
 };
-future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_permit permit);
+future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit);
 
 struct index_sampling_state {
     static constexpr size_t default_summary_byte_cost = 2000;
