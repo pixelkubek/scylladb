@@ -451,6 +451,7 @@ public:
     bool is_uploaded() const noexcept { return _state == sstable_state::upload; }
 
     std::vector<std::pair<component_type, sstring>> all_components() const;
+    std::vector<component_type> recognized_components() const;
 
     future<> snapshot(const sstring& name) const;
 
@@ -755,7 +756,13 @@ private:
     void validate_max_local_deletion_time();
     void validate_partitioner();
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
+public:
+    // Read component data and validate the digest.
+    // Returns whether a digest for the specified component is present.
+    future<bool> read_validate_component(component_type type);
+private:
     future<> validate_index_digest() const;
+    future<std::optional<uint32_t>> maybe_reread_scylla_file_digest() const;
     future<uint32_t> compute_component_file_digest(component_type type) const;
     future<uint32_t> compute_component_file_digest(file f, size_t size) const;
 
@@ -1173,6 +1180,7 @@ public:
     future<std::optional<uint32_t>> read_digest(file f);
     future<lw_shared_ptr<checksum>> read_checksum(file f);
     future<lw_shared_ptr<checksum>> read_checksum();
+    bool has_digest_for_component(component_type type) const;
 
     friend in_memory_config_type;
 
@@ -1226,9 +1234,15 @@ enum class validate_checksums_status {
     valid = 1,
     no_checksum = 2
 };
+enum class validate_component_digests_status {
+    invalid = 0,
+    valid = 1,
+};
 struct validate_checksums_result {
     validate_checksums_status status;
+    validate_component_digests_status digests_status;
     bool has_digest;
+    bool has_component_digests;
 };
 future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_permit permit);
 
