@@ -1320,13 +1320,20 @@ future<> sstable::read_validate_component(component_type type) {
     auto computed_digest = co_await compute_component_file_digest(type);
 
     if (type == component_type::Scylla && _components->scylla_metadata->digest) {
-        // Refresh Scylla componend digest from disk in case the corruption occured in the digest itself.
+        // Refresh Scylla component digest from disk in case the corruption occured in the digest itself.
         auto disk_digest = co_await read_scylla_file_digest();
-        _components->scylla_metadata->digest = disk_digest;
+        if (*_components->scylla_metadata->digest != disk_digest) {
+            auto msg = fmt::format("{} digest value mismatch in {}: expected {}, read {}",
+                        type, get_filename(), *_components->scylla_metadata->digest, disk_digest);
+            if (_ignore_component_digest_mismatch) {
+                sstlog.warn("{}", msg);
+            } else {
+                throw_malformed_sstable_exception(msg);
+            }
+        }
     }
 
     validate_component_digest(type, computed_digest);
-
 }
 
 
