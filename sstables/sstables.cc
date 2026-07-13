@@ -6,10 +6,12 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "sstables/component_type.hh"
 #include "utils/exceptions.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
+#include <cstdint>
 #include <cstdlib>
 #include <vector>
 #include <limits>
@@ -1271,6 +1273,16 @@ void sstable::validate_partitioner() {
 
 }
 
+future<uint32_t> sstable::read_scylla_file_digest() const {
+    auto f = co_await new_sstable_component_file(_read_error_handler, component_type::Scylla, open_flags::ro);
+    auto size = co_await f.size();
+    auto reader = file_random_access_reader(std::move(f), size);
+    co_await reader.seek(size - sizeof(uint32_t));
+    auto buf = co_await reader.read_exactly(sizeof(uint32_t));
+    co_return seastar::read_be<uint32_t>(buf.get());
+}
+
+
 future<uint32_t> sstable::compute_component_file_digest(component_type type) const {
     auto f = co_await new_sstable_component_file(_read_error_handler, type, open_flags::ro);
     auto size = co_await f.size();
@@ -1306,7 +1318,15 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
 
 future<> sstable::read_validate_component(component_type type) {
     auto computed_digest = co_await compute_component_file_digest(type);
+
+    if (type == component_type::Scylla && _components->scylla_metadata->digest) {
+        // Refresh Scylla componend digest from disk in case the corruption occured in the digest itself.
+        auto disk_digest = co_await read_scylla_file_digest();
+        _components->scylla_metadata->digest = disk_digest;
+    }
+
     validate_component_digest(type, computed_digest);
+
 }
 
 
@@ -3362,9 +3382,9 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
     };
 
     for (const auto& c : sst->all_components()) {
-        sstlog.info("Checking: {}", c);
+        component_type type = c.first;
         try {
-            co_await sst->read_validate_component(c.first);
+            co_await sst->read_validate_component(type);
         } catch (malformed_sstable_exception& e) {
             valid = false;
             sstlog.error("{}", e.what());

@@ -759,6 +759,7 @@ public:
     future<> read_validate_component(component_type type);
 private:
     future<> validate_index_digest() const;
+    future<uint32_t> read_scylla_file_digest() const;
     future<uint32_t> compute_component_file_digest(component_type type) const;
     future<uint32_t> compute_component_file_digest(file f, size_t size) const;
 
