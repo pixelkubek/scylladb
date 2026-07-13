@@ -1277,9 +1277,21 @@ future<uint32_t> sstable::read_scylla_file_digest() const {
     auto f = co_await new_sstable_component_file(_read_error_handler, component_type::Scylla, open_flags::ro);
     auto size = co_await f.size();
     auto reader = file_random_access_reader(std::move(f), size);
-    co_await reader.seek(size - sizeof(uint32_t));
-    auto buf = co_await reader.read_exactly(sizeof(uint32_t));
-    co_return seastar::read_be<uint32_t>(buf.get());
+
+    uint32_t digest;
+    std::exception_ptr ex;
+    try {
+        co_await reader.seek(size - sizeof(uint32_t));
+        auto buf = co_await reader.read_exactly(sizeof(uint32_t));
+        digest = seastar::read_be<uint32_t>(buf.get());
+    } catch (...) {
+        ex = std::current_exception();
+    }
+    co_await reader.close();
+
+    maybe_rethrow_exception(std::move(ex));
+
+    co_return digest;
 }
 
 
