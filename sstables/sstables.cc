@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "utils/exceptions.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -1302,6 +1303,12 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
         }
     }
 }
+
+future<> sstable::read_validate_component(component_type type) {
+    auto computed_digest = co_await compute_component_file_digest(type);
+    validate_component_digest(type, computed_digest);
+}
+
 
 future<> sstable::validate_index_digest() const {
     auto validate_component = [this] (component_type type, const file& f, size_t size) -> future<> {
@@ -3332,12 +3339,45 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum() {
     co_return std::move(checksum);
 }
 
+std::string_view format_as(const validate_checksums_status& status) {
+    switch (status) {
+    case validate_checksums_status::invalid:
+        return "invalid";
+    case validate_checksums_status::valid:
+        return "valid";
+    case validate_checksums_status::no_checksum:
+        return "no_checksum";
+    }
+    return "";
+}
+
 future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_permit permit) {
+    auto valid = true;
+    std::exception_ptr ex;
+
     const auto digest = co_await sst->read_digest();
     validate_checksums_result ret = {
         validate_checksums_status::valid,
         digest.has_value()
     };
+
+    for (const auto& c : sst->all_components()) {
+        sstlog.info("Checking: {}", c);
+        try {
+            co_await sst->read_validate_component(c.first);
+        } catch (malformed_sstable_exception& e) {
+            valid = false;
+            sstlog.error("{}", e.what());
+        } catch (...) {
+            ex = std::current_exception();
+        }
+        maybe_rethrow_exception(ex);
+    }
+
+    if (!valid) {
+        ret.status = validate_checksums_status::invalid;
+        co_return ret;
+    }
 
     auto checksum = co_await sst->read_checksum();
     if (!checksum && !sst->get_compression()) {
@@ -3356,9 +3396,6 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
                     ret.status = validate_checksums_status::invalid;
                 })
         );
-
-    auto valid = true;
-    std::exception_ptr ex;
 
     try {
         if (sst->get_compression()) {

@@ -755,6 +755,9 @@ private:
     void validate_max_local_deletion_time();
     void validate_partitioner();
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
+public:
+    future<> read_validate_component(component_type type);
+private:
     future<> validate_index_digest() const;
     future<uint32_t> compute_component_file_digest(component_type type) const;
     future<uint32_t> compute_component_file_digest(file f, size_t size) const;
@@ -1226,6 +1229,7 @@ enum class validate_checksums_status {
     valid = 1,
     no_checksum = 2
 };
+std::string_view format_as(const validate_checksums_status&);
 struct validate_checksums_result {
     validate_checksums_status status;
     bool has_digest;
