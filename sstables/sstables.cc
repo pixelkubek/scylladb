@@ -13,6 +13,7 @@
 #include <concepts>
 #include <cstdint>
 #include <cstdlib>
+#include <fmt/format.h>
 #include <vector>
 #include <limits>
 #include <algorithm>
@@ -1273,16 +1274,26 @@ void sstable::validate_partitioner() {
 
 }
 
-future<uint32_t> sstable::read_scylla_file_digest() const {
+future<std::optional<uint32_t>> sstable::maybe_reread_scylla_file_digest() const {
+    if (!_components->scylla_metadata->digest) {
+        co_return std::nullopt;
+    }
+
+    constexpr size_t digest_size = sizeof(uint32_t);
     auto f = co_await new_sstable_component_file(_read_error_handler, component_type::Scylla, open_flags::ro);
     auto size = co_await f.size();
+
+    if (size < digest_size) {
+        throw_malformed_sstable_exception(fmt::format("missing digest in {}", get_filename()));
+    }
+
     auto reader = file_random_access_reader(std::move(f), size);
 
     uint32_t digest;
     std::exception_ptr ex;
     try {
-        co_await reader.seek(size - sizeof(uint32_t));
-        auto buf = co_await reader.read_exactly(sizeof(uint32_t));
+        co_await reader.seek(size - digest_size);
+        auto buf = co_await reader.read_exactly(digest_size);
         digest = seastar::read_be<uint32_t>(buf.get());
     } catch (...) {
         ex = std::current_exception();
@@ -1331,10 +1342,10 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
 future<> sstable::read_validate_component(component_type type) {
     auto computed_digest = co_await compute_component_file_digest(type);
 
-    if (type == component_type::Scylla && _components->scylla_metadata->digest) {
+    if (type == component_type::Scylla) {
         // Refresh Scylla component digest from disk in case the corruption occured in the digest itself.
-        auto disk_digest = co_await read_scylla_file_digest();
-        if (*_components->scylla_metadata->digest != disk_digest) {
+        auto disk_digest = co_await maybe_reread_scylla_file_digest();
+        if (_components->scylla_metadata->digest != disk_digest) {
             auto msg = fmt::format("{} digest value mismatch in {}: expected {}, read {}",
                         type, get_filename(), *_components->scylla_metadata->digest, disk_digest);
             if (_ignore_component_digest_mismatch) {
