@@ -1060,7 +1060,7 @@ static future<> test_component_digest_validation(component_type component, sstab
 
         corrupt_sstable(sst, component);
 
-        BOOST_REQUIRE_EQUAL(sstables::validate_checksums(sst, env.make_reader_permit()).get().status, validate_checksums_status::invalid);
+        BOOST_REQUIRE(sstables::validate_checksums(sst, env.make_reader_permit()).get().status == validate_checksums_status::invalid);
 
         // Loading the sstable should detect the digest mismatch
         auto sst_corrupted = env.make_sstable(schema, dir_path, entry_desc.generation, entry_desc.version, entry_desc.format);

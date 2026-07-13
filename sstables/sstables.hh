@@ -451,6 +451,7 @@ public:
     bool is_uploaded() const noexcept { return _state == sstable_state::upload; }
 
     std::vector<std::pair<component_type, sstring>> all_components() const;
+    std::vector<component_type> recognized_components() const;
 
     future<> snapshot(const sstring& name) const;
 
@@ -1230,7 +1231,6 @@ enum class validate_checksums_status {
     valid = 1,
     no_checksum = 2
 };
-std::string_view format_as(const validate_checksums_status&);
 struct validate_checksums_result {
     validate_checksums_status status;
     bool has_digest;

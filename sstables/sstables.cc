@@ -2883,6 +2883,11 @@ std::vector<std::pair<component_type, sstring>> sstable::all_components() const 
     return all;
 }
 
+std::vector<component_type> sstable::recognized_components() const {
+    return _recognized_components | std::ranges::to<std::vector<component_type>>();
+}
+
+
 future<> sstable::snapshot(const sstring& name) const {
     auto lock = co_await get_units(_mutate_sem, 1);
     co_await _storage->snapshot(*this, format("{}/{}", sstables::snapshots_dir, name));
@@ -3366,18 +3371,6 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum() {
     co_return std::move(checksum);
 }
 
-std::string_view format_as(const validate_checksums_status& status) {
-    switch (status) {
-    case validate_checksums_status::invalid:
-        return "invalid";
-    case validate_checksums_status::valid:
-        return "valid";
-    case validate_checksums_status::no_checksum:
-        return "no_checksum";
-    }
-    return "";
-}
-
 future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_permit permit) {
     auto valid = true;
     std::exception_ptr ex;
@@ -3388,8 +3381,7 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
         digest.has_value()
     };
 
-    for (const auto& c : sst->all_components()) {
-        component_type type = c.first;
+    for (const auto& type : sst->recognized_components()) {
         try {
             co_await sst->read_validate_component(type);
         } catch (malformed_sstable_exception& e) {
