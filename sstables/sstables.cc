@@ -1270,6 +1270,34 @@ void sstable::validate_partitioner() {
 
 }
 
+future<uint32_t> sstable::read_scylla_file_digest() const {
+    constexpr size_t digest_size = sizeof(uint32_t);
+    auto f = co_await new_sstable_component_file(_read_error_handler, component_type::Scylla, open_flags::ro);
+    auto size = co_await f.size();
+
+    if (size < digest_size) {
+        co_await f.close();
+        throw_malformed_sstable_exception(fmt::format("missing digest in {}", get_filename()));
+    }
+
+    auto reader = file_random_access_reader(std::move(f), size);
+
+    uint32_t digest;
+    std::exception_ptr ex;
+    try {
+        co_await reader.seek(size - digest_size);
+        auto buf = co_await reader.read_exactly(digest_size);
+        digest = seastar::read_be<uint32_t>(buf.get());
+    } catch (...) {
+        ex = std::current_exception();
+    }
+    co_await reader.close();
+
+    maybe_rethrow_exception(std::move(ex));
+
+    co_return digest;
+}
+
 future<uint32_t> sstable::compute_component_file_digest(component_type type) const {
     auto f = co_await new_sstable_component_file(_read_error_handler, type, open_flags::ro);
     auto size = co_await f.size();
@@ -1299,6 +1327,46 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
             sstlog.warn("{}", msg);
         } else {
             throw_malformed_sstable_exception(msg);
+        }
+    }
+}
+
+future<bool> sstable::read_validate_component(component_type type) {
+    auto stored_digest = get_component_digest(type);
+    if (!stored_digest.has_value()) {
+        co_return false;
+    }
+
+    auto computed_digest = co_await compute_component_file_digest(type);
+    validate_component_digest(type, computed_digest);
+    co_return true;
+}
+
+future<> sstable::validate_scylla_digest_value() {
+    auto stored_digest = get_component_digest(component_type::Scylla);
+    
+    if (!stored_digest) {
+        co_return;
+    }
+
+    auto disk_digest = co_await read_scylla_file_digest();
+    if (stored_digest != disk_digest) {
+        auto msg = fmt::format("{} digest value mismatch in {}: expected {}, read {}",
+            component_type::Scylla, get_filename(), stored_digest, disk_digest);
+        if (_ignore_component_digest_mismatch) {
+            sstlog.warn("{}", msg);
+        } else {
+            throw_malformed_sstable_exception(msg);
+        }
+    }
+}
+
+future<> sstable::validate_digests(sstable::skip_data_digest skip_data) {
+    co_await validate_scylla_digest_value();
+
+    for (const auto& type : _recognized_components) {
+        if (type != component_type::Data || !skip_data) {
+            co_await read_validate_component(type);
         }
     }
 }
@@ -3229,6 +3297,9 @@ future<uint32_t> sstable::read_digest_from_file(file f) {
     co_return boost::lexical_cast<uint32_t>(digest_str);
 }
 
+bool sstable::has_digest() const {
+    return !(!has_component(component_type::Digest) || _unlinked_at);
+}
 
 future<std::optional<uint32_t>> sstable::read_digest() {
     if (_components->digest) {
@@ -3292,6 +3363,15 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum_from_file(file f) {
     co_return checksum;
 }
 
+bool sstable::has_checksum() const {
+    if (_components->checksum) {
+        return true;
+    }
+    if (!has_component(component_type::CRC) || _unlinked_at) {
+        return false;
+    }
+    return true;
+}
 
 future<lw_shared_ptr<checksum>> sstable::read_checksum(file f) {
     auto checksum = co_await read_checksum_from_file(std::move(f));
@@ -3333,12 +3413,33 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum() {
 }
 
 future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_permit permit) {
-    const auto digest = co_await sst->read_digest();
+    auto valid = true;
+    std::exception_ptr ex;
+
+    auto checksums_available = sst->has_checksum() || sst->get_compression();
+
     validate_checksums_result ret = {
         validate_checksums_status::valid,
-        digest.has_value()
+        sst->has_digest(),
+        checksums_available
     };
 
+    try {
+        co_await sst->validate_digests(sstable::skip_data_digest{ret.has_digest});
+    } catch (malformed_sstable_exception& e) {
+        ret.status = validate_checksums_status::invalid_component_digest;
+        sstlog.error("{}", e.what());
+    } catch (...) {
+        ex = std::current_exception();
+    }
+
+    maybe_rethrow_exception(ex);
+
+    if (ret.status == validate_checksums_status::invalid_component_digest) {
+        co_return ret;
+    }
+
+    const auto digest = co_await sst->read_digest();
     auto checksum = co_await sst->read_checksum();
     if (!checksum && !sst->get_compression()) {
         sstlog.warn("No checksums available for SSTable: {}", sst->get_filename());
@@ -3356,9 +3457,6 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
                     ret.status = validate_checksums_status::invalid;
                 })
         );
-
-    auto valid = true;
-    std::exception_ptr ex;
 
     try {
         if (sst->get_compression()) {

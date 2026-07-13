@@ -2909,6 +2909,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
 
                 sstables::test(sst).set_digest(std::nullopt);
                 sstables::test(sst).rewrite_toc_without_component(component_type::Digest);
+                sstables::test(sst).set_component_metadata_digest(component_type::Data, std::nullopt);
                 res = sstables::validate_checksums(sst, permit).get();
                 BOOST_REQUIRE(res.status == validate_checksums_status::invalid);
                 BOOST_REQUIRE(!res.has_digest);
