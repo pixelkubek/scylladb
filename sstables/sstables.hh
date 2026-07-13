@@ -451,6 +451,7 @@ public:
     bool is_uploaded() const noexcept { return _state == sstable_state::upload; }
 
     std::vector<std::pair<component_type, sstring>> all_components() const;
+    std::vector<component_type> recognized_components() const;
 
     future<> snapshot(const sstring& name) const;
 
@@ -755,7 +756,11 @@ private:
     void validate_max_local_deletion_time();
     void validate_partitioner();
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
+public:
+    future<> read_validate_component(component_type type);
+private:
     future<> validate_index_digest() const;
+    future<std::optional<uint32_t>> maybe_reread_scylla_file_digest() const;
     future<uint32_t> compute_component_file_digest(component_type type) const;
     future<uint32_t> compute_component_file_digest(file f, size_t size) const;
 
