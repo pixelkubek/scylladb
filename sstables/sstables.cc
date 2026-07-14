@@ -3402,7 +3402,7 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
     const auto digest = co_await sst->read_digest();
     validate_checksums_result ret = {
         validate_checksums_status::valid,
-        validate_component_digests_status::valid,
+        0,
         digest.has_value(),
         true
     };
@@ -3421,7 +3421,7 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
             auto had_digest = co_await sst->read_validate_component(type);
             ret.has_component_digests = ret.has_component_digests && had_digest;
         } catch (malformed_sstable_exception& e) { 
-            ret.digests_status = validate_component_digests_status::invalid;
+            ret.digest_validation_errors++;
             sstlog.error("{}", e.what());
         } catch (...) {
             ex = std::current_exception();

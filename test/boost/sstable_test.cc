@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include <boost/test/tools/old/interface.hpp>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/future-util.hh>
 #include <seastar/core/align.hh>
@@ -1059,7 +1060,7 @@ static future<> test_component_digest_validation(component_type component, sstab
 
         corrupt_sstable(sst, component);
 
-        BOOST_REQUIRE(sstables::validate_checksums_and_digests(sst, env.make_reader_permit()).get().digests_status == validate_component_digests_status::invalid);
+        BOOST_REQUIRE_EQUAL(sstables::validate_checksums_and_digests(sst, env.make_reader_permit()).get().digest_validation_errors, 1);
 
         // Loading the sstable should detect the digest mismatch
         auto sst_corrupted = env.make_sstable(schema, dir_path, entry_desc.generation, entry_desc.version, entry_desc.format);

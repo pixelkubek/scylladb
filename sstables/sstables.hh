@@ -1245,13 +1245,10 @@ enum class validate_checksums_status {
     valid = 1,
     no_checksum = 2
 };
-enum class validate_component_digests_status {
-    invalid = 0,
-    valid = 1,
-};
+
 struct validate_checksums_result {
     validate_checksums_status status;
-    validate_component_digests_status digests_status;
+    size_t digest_validation_errors;
     bool has_digest;
     bool has_component_digests;
 };
