@@ -2159,6 +2159,9 @@ static future<compaction_result> scrub_sstables_validate_mode(compaction_descrip
     for (const auto& sst : descriptor.sstables) {
         clogger.info("Scrubbing in validate mode {}", sst->get_filename());
 
+        auto digest_validation = co_await sstables::validate_checksums_and_digests(sst, permit, sstables::validate_skip_data::yes);
+        validation_errors += digest_validation.digest_validation_errors;
+
         validation_errors += co_await sst->validate(permit, cdata.abort, [&schema] (sstring what) {
             scrub_compaction::report_validation_error(compaction_type::Scrub, *schema, what);
         }, monitor_generator(sst), true);
