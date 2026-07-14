@@ -7701,12 +7701,15 @@ SEASTAR_TEST_CASE(test_perform_component_rewrite_multiple_sstables) {
     });
 }
 
-static future<> test_scrub_validates_component_digests(test_env& env, sstables::component_type type) {
-    auto s = schema_builder(this_smp_shard_count(), "tests", "unsealed_sstable_compaction_test")
-        .with_column("id", utf8_type, column_kind::partition_key)
-        .with_column("value", int32_type).build();
+static void test_scrub_validates_component_digests(test_env& env, sstables::component_type type) {
+    simple_schema ss;
+    auto s = ss.schema();
+    auto pk = ss.make_pkey();
 
-    auto sst = env.make_sstable(s);
+    auto mut1 = mutation(s, pk);
+    mut1.partition().apply_insert(*s, ss.make_ckey(0), ss.new_timestamp());
+    auto sst = make_sstable_containing(env.make_sstable(s), {std::move(mut1)}).get();
+    sstables::test(sst).recalculate_component_digest(type).get();
 
     corrupt_sstable(sst, type);
 
@@ -7714,15 +7717,15 @@ static future<> test_scrub_validates_component_digests(test_env& env, sstables::
 
     abort_source abort;
 
-    auto errors = co_await sst->validate(permit, abort, [](sstring what) {
+    auto errors = sst->validate(permit, abort, [](sstring what) {
             testlog.trace("validation error: ", what);
-    });
+    }).get();
 
     BOOST_REQUIRE_NE(errors, 0);
 }
 
 SEASTAR_TEST_CASE(test_scrub_validates_toc_digest) {
-    return test_env::do_with_async([](test_env& env) { test_scrub_validates_component_digests(env, component_type::TOC).get(); });
+    return test_env::do_with_async([](test_env& env) { test_scrub_validates_component_digests(env, component_type::TOC); });
 }
 
 BOOST_AUTO_TEST_SUITE_END()
