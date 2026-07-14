@@ -1207,6 +1207,8 @@ public:
 //
 // Sstables have two kind of checksums: per-chunk checksums and a
 // full-checksum (digest) calculated over the entire content of Data.db.
+// Other components have a digest, which is stored in the Scylla-metadata
+// component.
 //
 // The full-checksum (digest) is stored in Digest.crc (component_type::Digest).
 //
@@ -1222,12 +1224,20 @@ public:
 // data, on the compressed data.
 //
 // This method validates both the full checksum and the per-chunk checksum
-// for the entire Data.db.
+// for the entire Data.db, as well as the digests of other components.
 //
-// Returns `valid` if all checksums are valid.
-// Returns `invalid` if at least one checksum is invalid.
-// Returns `no_checksum` if the sstable is uncompressed and does not have
+// Returns `validate_checksums_status::valid` if all checksums.
+// Returns `validate_checksums_status::invalid` if at least one checksum is invalid.
+// Returns `validate_checksums_status::no_checksum` if the sstable is uncompressed and does not have
 // a CRC component (CRC.db is missing from TOC.txt).
+//
+// Returns `validate_component_digests_status::invalid` if at least one
+// component digest is invalid.
+// Returns `validate_component_digests_status::valid` if all checked
+// component digests are valid.
+//
+// `has_component_digests` is `true` if all components have digests.
+//
 // Validation errors are logged individually.
 enum class validate_checksums_status {
     invalid = 0,
