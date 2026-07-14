@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "seastar/util/bool_class.hh"
 #include "version.hh"
 #include "shared_sstable.hh"
 #include "open_info.hh"
@@ -1254,7 +1255,8 @@ struct validate_checksums_result {
     bool has_digest;
     bool has_component_digests;
 };
-future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit);
+using validate_skip_data = bool_class<struct validate_include_data_tag>;
+future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit, validate_skip_data skip_data = validate_skip_data::no);
 
 struct index_sampling_state {
     static constexpr size_t default_summary_byte_cost = 2000;

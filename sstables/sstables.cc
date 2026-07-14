@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "sstables/component_type.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -3394,7 +3395,7 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum() {
     co_return std::move(checksum);
 }
 
-future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit) {
+future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit, validate_skip_data skip_data) {
     auto valid = true;
     std::exception_ptr ex;
 
@@ -3407,6 +3408,10 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
     };
 
     for (const auto& type : sst->recognized_components()) {
+        if (type == component_type::Data && skip_data) {
+            continue;
+        }
+
         if (type == component_type::Data && digest.has_value()) {
             // The data component will be validated against the digest.
             continue;
@@ -3422,6 +3427,10 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
             ex = std::current_exception();
         }
         maybe_rethrow_exception(ex);
+    }
+
+    if (skip_data) {
+        co_return ret;
     }
 
     auto checksum = co_await sst->read_checksum();
