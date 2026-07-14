@@ -1248,9 +1248,9 @@ enum class validate_checksums_status {
 
 struct validate_checksums_result {
     validate_checksums_status status;
-    size_t digest_validation_errors;
     bool has_digest;
-    bool has_component_digests;
+    size_t digest_validation_errors;
+    size_t missing_digests;
 };
 using validate_skip_data = bool_class<struct validate_include_data_tag>;
 future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit, validate_skip_data skip_data = validate_skip_data::no);

@@ -3402,9 +3402,9 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
     const auto digest = co_await sst->read_digest();
     validate_checksums_result ret = {
         validate_checksums_status::valid,
-        0,
         digest.has_value(),
-        true
+        0,
+        0
     };
 
     for (const auto& type : sst->recognized_components()) {
@@ -3419,7 +3419,9 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
 
         try {
             auto had_digest = co_await sst->read_validate_component(type);
-            ret.has_component_digests = ret.has_component_digests && had_digest;
+            if (!had_digest) {
+                ret.missing_digests++;
+            }
         } catch (malformed_sstable_exception& e) { 
             ret.digest_validation_errors++;
             sstlog.error("{}", e.what());
