@@ -16,9 +16,11 @@
 #include <seastar/util/short_streams.hh>
 #include <seastar/core/coroutine.hh>
 
+#include "sstables/component_type.hh"
 #include "sstables/generation_type.hh"
 #include "sstables/sstables.hh"
 #include "compaction/compaction.hh"
+#include "test/lib/sstable_test_env.hh"
 #undef SEASTAR_TESTING_MAIN
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
@@ -3040,6 +3042,9 @@ void scrub_validate_no_digest(compress_sstable compress) {
         // Checksum and digest checking should be orthogonal.
         // Ensure that per-chunk checksums are properly checked when digest is missing.
         sstables::test(sst).rewrite_toc_without_component(component_type::Digest);
+
+        // Ensure that the TOC digest is correct.
+        sstables::test(sst).recalculate_component_digest(component_type::TOC).get();
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
@@ -7694,6 +7699,30 @@ SEASTAR_TEST_CASE(test_perform_component_rewrite_multiple_sstables) {
             BOOST_REQUIRE(current_sstables->contains(sst));
         }
     });
+}
+
+static future<> test_scrub_validates_component_digests(test_env& env, sstables::component_type type) {
+    auto s = schema_builder(this_smp_shard_count(), "tests", "unsealed_sstable_compaction_test")
+        .with_column("id", utf8_type, column_kind::partition_key)
+        .with_column("value", int32_type).build();
+
+    auto sst = env.make_sstable(s);
+
+    corrupt_sstable(sst, type);
+
+    auto permit = env.make_reader_permit();
+
+    abort_source abort;
+
+    auto errors = co_await sst->validate(permit, abort, [](sstring what) {
+            testlog.trace("validation error: ", what);
+    });
+
+    BOOST_REQUIRE_NE(errors, 0);
+}
+
+SEASTAR_TEST_CASE(test_scrub_validates_toc_digest) {
+    return test_env::do_with_async([](test_env& env) { test_scrub_validates_component_digests(env, component_type::TOC).get(); });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

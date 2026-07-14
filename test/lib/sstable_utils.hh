@@ -8,8 +8,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 
+#include "sstables/component_type.hh"
 #include "sstables/sstables.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/index_reader.hh"
@@ -20,6 +22,7 @@
 #include "test/lib/sstable_test_env.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
 #include "db_clock.hh"
+#include "utils/assert.hh"
 #include <seastar/core/coroutine.hh>
 
 using namespace sstables;
@@ -228,6 +231,22 @@ public:
 
     void set_digest(std::optional<uint32_t> digest) {
         _sst->_components->digest = digest;
+    }
+
+
+    void set_component_digest(component_type type, uint32_t digest) {
+        SCYLLA_ASSERT(_sst->has_scylla_component());
+        if (type == component_type::Scylla) {
+            _sst->_components->scylla_metadata->digest = digest;
+            return;
+        }
+        auto& cd = _sst->_components->scylla_metadata->get_or_create_components_digests();
+        cd.map[type] = digest;
+    }
+
+    future<> recalculate_component_digest(component_type type) {
+        auto computed = co_await _sst->compute_component_file_digest(type);
+        set_component_digest(type, computed);
     }
 
     storage& get_storage() {
