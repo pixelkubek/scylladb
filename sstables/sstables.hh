@@ -756,13 +756,17 @@ private:
     void validate_max_local_deletion_time();
     void validate_partitioner();
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
-public:
     // Read component data and validate the digest.
     // Returns whether a digest for the specified component is present.
     future<bool> read_validate_component(component_type type);
+    future<> validate_scylla_digest_value();
+public:
+    future<> validate_digests();
 private:
     future<> validate_index_digest() const;
-    future<std::optional<uint32_t>> maybe_reread_scylla_file_digest() const;
+    // Read the Scylla component self-digest from file.
+    // Can be called only for sstables which have a Scylla file digest.
+    future<uint32_t> read_scylla_file_digest() const;
     future<uint32_t> compute_component_file_digest(component_type type) const;
     future<uint32_t> compute_component_file_digest(file f, size_t size) const;
 
@@ -1176,8 +1180,10 @@ public:
     gc_clock::time_point get_gc_before_for_drop_estimation(const gc_clock::time_point& compaction_time, const tombstone_gc_state& gc_state, const schema_ptr& s) const;
     gc_clock::time_point get_gc_before_for_fully_expire(const gc_clock::time_point& compaction_time, const tombstone_gc_state& gc_state, const schema_ptr& s) const;
 
+    bool has_digest() const;
     future<std::optional<uint32_t>> read_digest();
     future<std::optional<uint32_t>> read_digest(file f);
+    bool has_checksum() const;
     future<lw_shared_ptr<checksum>> read_checksum(file f);
     future<lw_shared_ptr<checksum>> read_checksum();
     bool has_digest_for_component(component_type type) const;
@@ -1242,17 +1248,13 @@ public:
 enum class validate_checksums_status {
     invalid = 0,
     valid = 1,
-    no_checksum = 2
-};
-enum class validate_component_digests_status {
-    invalid = 0,
-    valid = 1,
+    no_checksum = 2,
+    invalid_component_digest = 3
 };
 struct validate_checksums_result {
     validate_checksums_status status;
-    validate_component_digests_status digests_status;
     bool has_digest;
-    bool has_component_digests;
+    bool has_checksum;
 };
 future<validate_checksums_result> validate_checksums_and_digests(shared_sstable sst, reader_permit permit);
 

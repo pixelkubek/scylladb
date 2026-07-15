@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "sstables/component_type.hh"
+#include "utils/exceptions.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -1270,11 +1272,7 @@ void sstable::validate_partitioner() {
 
 }
 
-future<std::optional<uint32_t>> sstable::maybe_reread_scylla_file_digest() const {
-    if (!_components->scylla_metadata->digest) {
-        co_return std::nullopt;
-    }
-
+future<uint32_t> sstable::read_scylla_file_digest() const {
     constexpr size_t digest_size = sizeof(uint32_t);
     auto f = co_await new_sstable_component_file(_read_error_handler, component_type::Scylla, open_flags::ro);
     auto size = co_await f.size();
@@ -1343,22 +1341,39 @@ future<bool> sstable::read_validate_component(component_type type) {
 
     if (type == component_type::Scylla) {
         // Refresh Scylla component digest from disk in case the corruption ocurred in the digest itself.
-        auto disk_digest = co_await maybe_reread_scylla_file_digest();
-        SCYLLA_ASSERT(disk_digest);
-        if (*stored_digest != *disk_digest) {
-            auto msg = fmt::format("{} digest value mismatch in {}: expected {}, read {}",
-                        type, get_filename(), *stored_digest, *disk_digest);
-            if (_ignore_component_digest_mismatch) {
-                sstlog.warn("{}", msg);
-            } else {
-                throw_malformed_sstable_exception(msg);
-            }
-        }
+
     }
 
     auto computed_digest = co_await compute_component_file_digest(type);
     validate_component_digest(type, computed_digest);
     co_return true;
+}
+
+future<> sstable::validate_scylla_digest_value() {
+    auto stored_digest = get_component_digest(component_type::Scylla);
+    
+    if (!stored_digest) {
+        co_return;
+    }
+
+    auto disk_digest = co_await read_scylla_file_digest();
+    if (stored_digest != disk_digest) {
+        auto msg = fmt::format("{} digest value mismatch in {}: expected {}, read {}",
+            component_type::Scylla, get_filename(), stored_digest, disk_digest);
+        if (_ignore_component_digest_mismatch) {
+            sstlog.warn("{}", msg);
+        } else {
+            throw_malformed_sstable_exception(msg);
+        }
+    }
+}
+
+future<> sstable::validate_digests() {
+    co_await validate_scylla_digest_value();
+
+    for (const auto& type : _recognized_components) {
+        co_await read_validate_component(type);
+    }
 }
 
 future<> sstable::validate_index_digest() const {
@@ -3291,6 +3306,9 @@ future<uint32_t> sstable::read_digest_from_file(file f) {
     co_return boost::lexical_cast<uint32_t>(digest_str);
 }
 
+bool sstable::has_digest() const {
+    return !(!has_component(component_type::Digest) || _unlinked_at);
+}
 
 future<std::optional<uint32_t>> sstable::read_digest() {
     if (_components->digest) {
@@ -3354,6 +3372,15 @@ future<lw_shared_ptr<checksum>> sstable::read_checksum_from_file(file f) {
     co_return checksum;
 }
 
+bool sstable::has_checksum() const {
+    if (_components->checksum) {
+        return true;
+    }
+    if (!has_component(component_type::CRC) || _unlinked_at) {
+        return false;
+    }
+    return true;
+}
 
 future<lw_shared_ptr<checksum>> sstable::read_checksum(file f) {
     auto checksum = co_await read_checksum_from_file(std::move(f));
@@ -3398,32 +3425,31 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
     auto valid = true;
     std::exception_ptr ex;
 
-    const auto digest = co_await sst->read_digest();
+    auto checksums_available = sst->has_checksum() || sst->get_compression();
+
     validate_checksums_result ret = {
         validate_checksums_status::valid,
-        validate_component_digests_status::valid,
-        digest.has_value(),
-        true
+        sst->has_digest(),
+        checksums_available
     };
 
-    for (const auto& type : sst->recognized_components()) {
-        if (type == component_type::Data && digest.has_value()) {
-            // The data component will be validated against the digest.
-            continue;
-        }
-
-        try {
-            auto had_digest = co_await sst->read_validate_component(type);
-            ret.has_component_digests = ret.has_component_digests && had_digest;
-        } catch (malformed_sstable_exception& e) { 
-            ret.digests_status = validate_component_digests_status::invalid;
-            sstlog.error("{}", e.what());
-        } catch (...) {
-            ex = std::current_exception();
-        }
-        maybe_rethrow_exception(ex);
+    try {
+        co_await sst->validate_digests();
+    } catch (malformed_sstable_exception& e) {
+        ret.status = validate_checksums_status::invalid_component_digest;
+        sstlog.error("{}", e.what());
+    } catch (...) {
+        ex = std::current_exception();
     }
 
+    maybe_rethrow_exception(ex);
+
+    if (ret.status == validate_checksums_status::invalid_component_digest) {
+        co_return ret;
+    }
+
+
+    const auto digest = co_await sst->read_digest();
     auto checksum = co_await sst->read_checksum();
     if (!checksum && !sst->get_compression()) {
         sstlog.warn("No checksums available for SSTable: {}", sst->get_filename());
