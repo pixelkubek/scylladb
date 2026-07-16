@@ -757,9 +757,9 @@ private:
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
     // Read component data and validate the digest.
     // Returns whether a digest for the specified component is present.
-    future<bool> read_validate_component(component_type type);
     future<> validate_scylla_digest_value();
 public:
+    future<bool> read_validate_component(component_type type);
     using skip_data_digest = bool_class<struct skip_data_digest_tag>;
     future<> validate_digests(skip_data_digest skip_data = skip_data_digest::no);
 private:

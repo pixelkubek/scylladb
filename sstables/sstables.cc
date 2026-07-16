@@ -53,6 +53,7 @@
 #include "progress_monitor.hh"
 #include "compress.hh"
 #include "checksummed_data_source.hh"
+#include "digested_data_source.hh"
 #include "index_reader.hh"
 #include "downsampling.hh"
 #include <boost/algorithm/string.hpp>
@@ -4314,6 +4315,7 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
         {}
         future<input_stream<char>> input(const file_input_stream_options& options) const override {
             if (_type == component_type::Scylla) {
+                co_await _sst->read_validate_component(_type);
                 // Filter out any node-local info (i.e. extensions)
                 // and reserialize data. Load into a temp object.
                 // TODO/FIXME. Not all extension attributes might
@@ -4340,7 +4342,17 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
                 });
                 co_return seastar::util::as_input_stream(std::move(bufs));
             }
-            co_return make_file_input_stream(_file, options);
+
+            auto stream = make_file_input_stream(_file, options);
+            auto digest = _sst->get_component_digest(_type);
+            auto len = co_await _file.size();
+            if (digest) {
+                co_return make_digested_input_stream(std::move(stream), len, *digest, [&](sstring what) {
+                    throw_malformed_sstable_exception(what);
+                });
+            }
+
+            co_return stream;
         }
     };
 
