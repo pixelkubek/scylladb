@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "sstables/component_type.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/cql_assertions.hh"
 #include "streaming/stream_blob.hh"
@@ -563,6 +564,49 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_stream_digest_mismatched_compressed) {
 
 SEASTAR_THREAD_TEST_CASE(test_sstable_stream_digest_mismatched_uncompressed) {
     test_sstable_stream(compress_sstable::no, corrupt_digest_component, "Digest mismatch");
+}
+
+static void corrupt_sstable(sstables::shared_sstable sst, component_type component) {
+    auto path = sstables::test(sst).filename(component).native();
+    auto size = seastar::file_size(path).get();
+    auto f = open_file_dma(path, open_flags::rw).get();
+    auto close_f = deferred_close(f);
+    const auto mem_align = f.memory_dma_alignment();
+    const auto dma_align = f.disk_write_dma_alignment();
+    auto block_offset = align_down(size - 1, dma_align);
+    auto buf = seastar::temporary_buffer<char>::aligned(mem_align, dma_align);
+    f.dma_read(block_offset, buf.get_write(), dma_align).get();
+    if (component == component_type::Scylla && sst->get_component_digest(component_type::Scylla)) {
+        // Modify the last bit of the data itself, not the digest.
+        buf.get_write()[size - 1 - sizeof(uint32_t) - block_offset] ^= 1u;
+    } else {
+        // Flip one bit in the last byte of the file to corrupt it minimally.
+        // Using a single-bit flip avoids creating values that overflow
+        // during parsing.
+        buf.get_write()[size - 1 - block_offset] += 1;
+    }
+    f.dma_write(block_offset, buf.get(), dma_align).get();
+    f.truncate(size).get();
+}
+
+static std::function<future<>(shared_sstable)> corrupt_component_fn(component_type component) {
+    return [component](shared_sstable sst) {
+        return seastar::async([sst, component] {
+            corrupt_sstable(sst, component);
+        });
+    };
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_index_digest_mismatched) {
+    test_sstable_stream(compress_sstable::no, corrupt_component_fn(component_type::Index), "digest mismatch");
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_index_scylla_mismatched) {
+    test_sstable_stream(compress_sstable::no, corrupt_component_fn(component_type::Scylla), "digest mismatch");
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_toc_mismatched) {
+    test_sstable_stream(compress_sstable::no, corrupt_component_fn(component_type::TOC), "digest mismatch");
 }
 
 // Exercises the sstable_stream_sink_impl::output() path with local and object storage.
