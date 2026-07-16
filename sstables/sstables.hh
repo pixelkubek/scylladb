@@ -755,11 +755,12 @@ private:
     void validate_max_local_deletion_time();
     void validate_partitioner();
     void validate_component_digest(component_type type, uint32_t computed_digest) const;
+    future<> validate_scylla_digest_value();
+public:
     // Read component data and validate the digest.
     // Returns whether a digest for the specified component is present.
     future<bool> read_validate_component(component_type type);
-    future<> validate_scylla_digest_value();
-public:
+    
     using skip_data_digest = bool_class<struct skip_data_digest_tag>;
     future<> validate_digests(skip_data_digest skip_data = skip_data_digest::no);
 private:
