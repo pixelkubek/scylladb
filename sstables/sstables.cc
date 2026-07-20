@@ -1088,18 +1088,20 @@ void sstable::write_toc(std::unique_ptr<crc32_digest_file_writer> w) {
 
 void sstable::write_crc(const checksum& c) {
     unsigned buffer_size = 4096;
-    do_write_simple(component_type::CRC, [&] (version_types v, file_writer& w) {
+    auto digest = do_write_simple_with_digest(component_type::CRC, [&] (version_types v, file_writer& w) {
         write(v, w, c);
     }, buffer_size);
+    _components_digests.map[component_type::Digest] = digest;
 }
 
 // Digest file stores the full checksum of data file converted into a string.
 void sstable::write_digest(uint32_t full_checksum) {
     unsigned buffer_size = 4096;
-    do_write_simple(component_type::Digest, [&] (version_types v, file_writer& w) {
+    auto digest_component_digest = do_write_simple_with_digest(component_type::Digest, [&] (version_types v, file_writer& w) {
         auto digest = to_sstring<bytes>(full_checksum);
         write(v, w, digest);
     }, buffer_size);
+    _components_digests.map[component_type::Digest] = digest_component_digest;
     _components_digests.map[component_type::Data] = full_checksum;
 }
 
