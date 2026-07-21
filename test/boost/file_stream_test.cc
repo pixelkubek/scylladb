@@ -25,6 +25,7 @@
 #include "test/lib/gcs_fixture.hh"
 
 #include <boost/lexical_cast.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 #include <exception>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/test_fixture.hh>
@@ -871,15 +872,18 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress, const sstr
                     return global_ms.local().register_stream_blob([&global_db, &vbw, &global_ms, &expected_error_msg, &receiver_handled_error](const rpc::client_info& cinfo, streaming::stream_blob_meta meta, rpc::source<streaming::stream_blob_cmd_data> source) {
                         const auto& from = cinfo.retrieve_auxiliary<locator::host_id>("host_id");
                         auto sink = global_ms.local().make_sink_for_stream_blob(source);
-                        (void)[] -|> future<> {
-                            (void)stream_blob_handler(global_db.local(), vbw.local(), global_ms.local(), from, meta, sink, source).handle_exception([sink, source, ms = global_ms.local().shared_from_this()] (std::exception_ptr eptr) {
-                                try {
-                                    std::rethrow_exception(eptr);
+                        (void)[&] -> future<> {
+                            try {
+                                co_await stream_blob_handler(global_db.local(), vbw.local(), global_ms.local(), from, meta, sink, source);
+                            } catch (malformed_sstable_exception& e) {
+                                if (std::string_view{e.what()}.contains(expected_error_msg)) {
+                                    receiver_handled_error = true;
                                 }
+                            } catch (...) {
+                                auto eptr = std::current_exception();
                                 testlog.warn("Failed to run stream blob handler: {}", eptr);
-                            });
-
-                        }
+                            }
+                        }();
                         return make_ready_future<rpc::sink<streaming::stream_blob_cmd_data>>(sink);
                     });
                 });
@@ -942,6 +946,8 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress, const sstr
             testlog.info("Sender failed with {}", e);
         }
     } while (false);
+
+    BOOST_ASSERT(receiver_handled_error);
 
     if (verb_register) {
         co_await smp::invoke_on_all([&global_ms] {
