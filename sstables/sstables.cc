@@ -4516,7 +4516,7 @@ public:
             }
             auto expected = it->second;
             if (expected != _digest) {
-                throw_malformed_sstable_exception(fmt::format("abcd expected: {}, calculated: {}", expected, _digest));
+                throw_malformed_sstable_exception(fmt::format("digest mismatch: expected: {}, calculated: {}", expected, _digest));
             }
         }
     }
