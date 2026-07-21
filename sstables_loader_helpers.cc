@@ -12,6 +12,7 @@
 #include <seastar/core/units.hh>
 #include <seastar/core/fstream.hh>
 #include "replica/database.hh"
+#include "sstables/component_type.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "utils/error_injection.hh"
@@ -55,6 +56,7 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
 
     auto gen = table.get_sstable_generation_generator()();
     auto files = co_await sstable->readable_file_for_all_components();
+    uint32_t toc_digest;
     for (auto it = components.cbegin(); it != components.cend(); ++it) {
         try {
             auto descriptor = sstable->get_descriptor(it->first);
@@ -85,8 +87,15 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
             std::exception_ptr eptr;
             try {
                 co_await seastar::copy(src, out);
+                
                 auto calculated_digest = sstable_sink->get_digest();
-                sstable->validate_component_digest(it->first, calculated_digest);
+
+                if (it->first == component_type::TemporaryTOC) {
+                    // TOC digest will be validated after all components are streamed.
+                    toc_digest = calculated_digest;
+                } else {
+                    sstable->validate_component_digest(it->first, calculated_digest);
+                }
             } catch (...) {
                 eptr = std::current_exception();
                 logger.info("Error downloading SSTable component {}. Reason: {}", it->first, eptr);
@@ -98,6 +107,7 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
                 std::rethrow_exception(eptr);
             }
             if (auto sst = co_await sstable_sink->close()) {
+                sstable->validate_component_digest(component_type::TOC, toc_digest);
                 const auto& shards = sstable->get_shards_for_this_sstable();
                 if (shards.size() != 1) {
                     on_internal_error(logger, "Fully-contained sstable must belong to one shard only");

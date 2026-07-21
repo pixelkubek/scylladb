@@ -4472,7 +4472,7 @@ public:
             co_await save_metadata();
         }
 
-        co_return output_stream<char>(std::move(sink));
+        co_return output_stream<char>(std::move(checksummed_sink));
     }
     future<shared_sstable> close() override {
         if (_last_component) {
