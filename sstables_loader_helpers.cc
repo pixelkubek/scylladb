@@ -85,6 +85,8 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
             std::exception_ptr eptr;
             try {
                 co_await seastar::copy(src, out);
+                auto calculated_digest = sstable_sink->get_digest();
+                sstable->validate_component_digest(it->first, calculated_digest);
             } catch (...) {
                 eptr = std::current_exception();
                 logger.info("Error downloading SSTable component {}. Reason: {}", it->first, eptr);

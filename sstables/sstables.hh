@@ -754,9 +754,9 @@ private:
     // and so max_local_deletion_time should be discarded for those.
     void validate_max_local_deletion_time();
     void validate_partitioner();
-    void validate_component_digest(component_type type, uint32_t computed_digest) const;
     future<> validate_scylla_digest_value();
 public:
+    void validate_component_digest(component_type type, uint32_t computed_digest) const;
     // Read component data and validate the digest.
     // Returns whether a digest for the specified component is present.
     future<bool> read_validate_component(component_type type);
@@ -1351,6 +1351,7 @@ public:
     // Returns sealed sstable if last, or nullptr otherwise.
     virtual future<shared_sstable> close() = 0;
     virtual future<> abort() = 0;
+    virtual uint32_t get_digest() const noexcept = 0;
 };
 
 struct sstable_stream_sink_cfg {

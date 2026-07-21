@@ -23,6 +23,7 @@
 
 #include "db/config.hh"
 #include "db/extensions.hh"
+#include "seastar/core/iostream.hh"
 #include "sstables/exceptions.hh"
 #include "sstables/object_storage_client.hh"
 #include "sstables/sstable_directory.hh"

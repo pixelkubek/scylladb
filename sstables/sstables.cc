@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "sstables/checksum_utils.hh"
+#include "sstables/types.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -4409,12 +4411,16 @@ class sstable_stream_sink_impl : public sstable_stream_sink {
     component_type _type;
     bool _last_component;
     bool _leave_unsealed;
+    checksum _checksum;
+    uint32_t _digest;
 public:
     sstable_stream_sink_impl(shared_sstable sst, component_type type, sstable_stream_sink_cfg cfg)
         : _sst(std::move(sst))
         , _type(type)
         , _last_component(cfg.last_component)
         , _leave_unsealed(cfg.leave_unsealed)
+        , _checksum(DEFAULT_CHUNK_SIZE, {})
+        , _digest(crc32_utils::init_checksum())
     {}
 private:
     future<> load_metadata() const {
@@ -4439,9 +4445,9 @@ private:
         co_await seastar::async([&] {
             metadata.get_or_create_components_digests();
             metadata.digest = serialized_checksum(_sst->get_version(), metadata.data);
-            auto w = _sst->make_digests_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
-            write(_sst->get_version(), *w, metadata);
-            w->close();
+            auto w = _sst->make_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
+            write(_sst->get_version(), w, metadata);
+            w.close();
         });
     }
 public:
@@ -4459,6 +4465,7 @@ public:
         // object storage (S3) backends only support writing through upload sinks, not through
         // file::write_dma (readable_file is read-only).
         auto sink = co_await _sst->_storage->make_component_sink(*_sst, _type, open_flags::wo | open_flags::create, stream_options);
+        auto checksummed_sink = checksummed_file_data_sink<crc32_utils, false>(std::move(sink), _checksum, _digest);
 
         // Save back to disk.
         if (load_save_meta) {
@@ -4485,6 +4492,9 @@ public:
         // TODO: if we are the last component (or really always), should we remove all component files?
         // For now, this remains the responsibility of calling code (see handle_tablet_migration etc)
         co_await _sst->_storage->unlink_component(*_sst, _type);
+    }
+    uint32_t get_digest() const noexcept override {
+        return _digest;
     }
 };
 
