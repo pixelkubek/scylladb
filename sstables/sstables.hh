@@ -1352,6 +1352,7 @@ public:
     virtual future<shared_sstable> close() = 0;
     virtual future<> abort() = 0;
     virtual uint32_t get_digest() const noexcept = 0;
+    virtual future<> validate_digest() = 0;
 };
 
 struct sstable_stream_sink_cfg {

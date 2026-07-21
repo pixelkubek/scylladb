@@ -236,7 +236,8 @@ async def get_two_servers_to_move_tablet(manager: ManagerClient):
     """
     logger.info("Bootstrapping cluster")
     cmdline = ['--enable-file-stream', 'true']
-    servers = [await manager.server_add(cmdline=cmdline)]
+    cfg = {'sstable_format': 'mt'}
+    servers = [await manager.server_add(cmdline=cmdline, config=cfg)]
 
     await manager.disable_tablet_balancing()
 
@@ -244,7 +245,8 @@ async def get_two_servers_to_move_tablet(manager: ManagerClient):
     ks = await create_new_test_keyspace(cql, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 1};")
     await cql.run_async(f"CREATE TABLE {ks}.test (pk int PRIMARY KEY, c int);")
 
-    servers.append(await manager.server_add(cmdline=cmdline))
+
+    servers.append(await manager.server_add(cmdline=cmdline, config=cfg))
 
     key = 7 # Whatever
     tablet_token = 0 # Doesn't matter since there is one tablet

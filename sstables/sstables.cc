@@ -1332,6 +1332,10 @@ void sstable::validate_component_digest(component_type type, uint32_t computed_d
         } else {
             throw_malformed_sstable_exception(msg);
         }
+    } 
+    
+    if (!expected) {
+        sstlog.warn("Missing component digest for {} in {}", type, get_filename());
     }
 }
 
@@ -4498,6 +4502,10 @@ public:
     }
     uint32_t get_digest() const noexcept override {
         return _digest;
+    }
+    future<> validate_digest() override {
+        co_await load_metadata();
+        _sst->validate_component_digest(_type, _digest);
     }
 };
 

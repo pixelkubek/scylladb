@@ -309,7 +309,7 @@ future<> stream_blob_handler(replica::database& db,
                 std::optional<streaming::stream_blob_data> data = std::move(cmd_data.data);
                 if (data) {
                     utils::get_local_injector().inject("stream_blob_rx_data_corruption", [&data, &meta] {
-                        if (!meta.filename.contains("Scylla.db")) {
+                        if (!meta.filename.contains("Statistics.db")) {
                             return;
                         }
                         if (data->empty()) {
@@ -465,6 +465,8 @@ future<> stream_blob_handler(replica::database& db, db::view::view_building_work
                         co_await sstable_sink->abort();
                         co_return;
                     }
+                    blogger.info("Validating after stream {}", meta.filename);
+                    co_await sstable_sink->validate_digest();
                     auto sst = co_await sstable_sink->close();
                     if (sst) {
                         blogger.debug("stream_sstables[{}] Loading sstable {} on shard {}", meta.ops_id, sst->toc_filename(), meta.dst_shard_id);

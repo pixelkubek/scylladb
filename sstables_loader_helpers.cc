@@ -86,6 +86,7 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
 
             std::exception_ptr eptr;
             try {
+                logger.info("Downloading component {}", it->first);
                 co_await seastar::copy(src, out);
                 
                 auto calculated_digest = sstable_sink->get_digest();
