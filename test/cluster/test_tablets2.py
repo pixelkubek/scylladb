@@ -235,7 +235,7 @@ async def get_two_servers_to_move_tablet(manager: ManagerClient):
     The first server in servers list is source node to move the tablet from. The second server is the dest node.
     """
     logger.info("Bootstrapping cluster")
-    cmdline = ['--enable-file-stream', 'false']
+    cmdline = ['--enable-file-stream', 'true']
     servers = [await manager.server_add(cmdline=cmdline)]
 
     await manager.disable_tablet_balancing()
@@ -262,6 +262,7 @@ async def get_two_servers_to_move_tablet(manager: ManagerClient):
     if replica[0] != s0_host_id:
         servers.reverse()
         s0_host_id, s1_host_id = s1_host_id, s0_host_id
+    await manager.api.keyspace_flush(servers[0].ip_addr, ks, "test")
 
     dst_shard = 0
 
@@ -306,6 +307,21 @@ async def test_streaming_rx_error_no_failed_message_with_fail_stream_plan(manage
     await manager.api.move_tablet(servers[0].ip_addr, ks, "test", s1_host_id, dst_shard, replica[0], replica[1], tablet_token)
     rows = await cql.run_async(f"SELECT pk from {ks}.test")
     assert len(list(rows)) == 0
+
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_streaming_rx_data_corruption(manager: ManagerClient):
+    servers, cql, s0_host_id, s1_host_id, replica, tablet_token, dst_shard, ks = await get_two_servers_to_move_tablet(manager)
+
+    await manager.api.enable_injection(servers[1].ip_addr, "stream_blob_rx_data_corruption", one_shot=False)
+
+    s1_log = await manager.server_open_log(servers[1].server_id)
+    s1_mark = await s1_log.mark()
+
+    await asyncio.create_task(
+        manager.api.move_tablet(servers[0].ip_addr, ks, "test", replica[0], replica[1], s1_host_id, dst_shard, tablet_token, timeout=30))
+
+    await s1_log.wait_for('digest mismatch', from_mark=s1_mark)
+    s1_mark = await s1_log.mark()
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_streaming_rx_error_no_failed_message_no_fail_stream_plan_hang(manager: ManagerClient):

@@ -7,10 +7,12 @@
  */
 
 #include "sstables/component_type.hh"
+#include "sstables/shared_sstable.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/cql_assertions.hh"
 #include "streaming/stream_blob.hh"
 #include "message/messaging_service.hh"
+#include "test/lib/error_injection.hh"
 #include "test/lib/log.hh"
 #include "test/lib/sstable_utils.hh"
 #include "sstables/exceptions.hh"
@@ -607,6 +609,11 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_stream_scylla_digest_mismatched) {
 
 SEASTAR_THREAD_TEST_CASE(test_sstable_stream_toc_digest_mismatched) {
     test_sstable_stream(compress_sstable::no, corrupt_component_fn(component_type::TOC), "digest mismatch");
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_toc_digest_mismatched_rx) {
+    scoped_error_injection error_injection("stream_blob_rx_data_corruption");
+    test_sstable_stream(compress_sstable::no, [](shared_sstable){ return make_ready_future(); }, "digest mismatch");
 }
 
 // Exercises the sstable_stream_sink_impl::output() path with local and object storage.

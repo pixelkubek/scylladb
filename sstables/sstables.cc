@@ -7,6 +7,7 @@
  */
 
 #include "sstables/checksum_utils.hh"
+#include "sstables/component_type.hh"
 #include "sstables/types.hh"
 #include "utils/log.hh"
 #include <atomic>
@@ -4444,7 +4445,9 @@ private:
         options.buffer_size = default_sstable_buffer_size;
         co_await seastar::async([&] {
             metadata.get_or_create_components_digests();
-            metadata.digest = serialized_checksum(_sst->get_version(), metadata.data);
+            auto computed_digest = serialized_checksum(_sst->get_version(), metadata.data);
+            _sst->validate_component_digest(component_type::Scylla, computed_digest);
+            metadata.digest = computed_digest;
             auto w = _sst->make_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
             write(_sst->get_version(), w, metadata);
             w.close();

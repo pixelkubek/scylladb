@@ -308,6 +308,16 @@ future<> stream_blob_handler(replica::database& db,
             } else if (cmd == streaming::stream_blob_cmd::data) {
                 std::optional<streaming::stream_blob_data> data = std::move(cmd_data.data);
                 if (data) {
+                    utils::get_local_injector().inject("stream_blob_rx_data_corruption", [&data, &meta] {
+                        if (!meta.filename.contains("Scylla.db")) {
+                            return;
+                        }
+                        if (data->empty()) {
+                            data = temporary_buffer<char>(1);
+                        }
+                        data.value().buf.get_write()[0] ^= 1u;
+                    });
+
                     total_size += data->size();
                     blogger.trace("fstream[{}] Follower received data from peer={} data={}", meta.ops_id, from, data->size());
                     status->check_valid_stream();

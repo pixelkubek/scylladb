@@ -93,7 +93,7 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
                 if (it->first == component_type::TemporaryTOC) {
                     // TOC digest will be validated after all components are streamed.
                     toc_digest = calculated_digest;
-                } else {
+                } else if (it->first != component_type::Scylla) { // Scylla component is validated separately.
                     sstable->validate_component_digest(it->first, calculated_digest);
                 }
             } catch (...) {
