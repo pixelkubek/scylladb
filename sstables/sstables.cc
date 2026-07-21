@@ -9,6 +9,7 @@
 #include "sstables/checksum_utils.hh"
 #include "sstables/component_type.hh"
 #include "sstables/types.hh"
+#include "test/lib/sstable_utils.hh"
 #include "utils/log.hh"
 #include <atomic>
 #include <concepts>
@@ -4357,6 +4358,8 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
                 co_return make_digest_checked_input_stream(std::move(stream), len, *digest, [&](sstring what) {
                     throw_malformed_sstable_exception(what);
                 });
+            } else {
+                sstlog.warn("Creating a stream source without digest for {}", _type);
             }
 
             co_return stream;
@@ -4505,7 +4508,17 @@ public:
     }
     future<> validate_digest() override {
         co_await load_metadata();
-        _sst->validate_component_digest(_type, _digest);
+        if (auto& metadata = _sst->get_shared_components().scylla_metadata; metadata && metadata->get_components_digests()) {
+            auto& digest_map = metadata->get_components_digests()->map;
+            auto it = digest_map.find(_type);
+            if (it == digest_map.end()) {
+                co_return;
+            }
+            auto expected = it->second;
+            if (expected != _digest) {
+                throw_malformed_sstable_exception(fmt::format("abcd expected: {}, calculated: {}", expected, _digest));
+            }
+        }
     }
 };
 

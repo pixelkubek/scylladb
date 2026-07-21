@@ -260,6 +260,10 @@ public:
     future<file> open_file(component_type type, open_flags flags, file_open_options opts) {
         return _sst->open_file(type, flags, opts);
     }
+
+    auto& get_digests() {
+        return _sst->_components_digests;
+    }
 };
 
 inline auto replacer_fn_no_op() {
