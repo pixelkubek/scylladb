@@ -4439,9 +4439,9 @@ private:
         co_await seastar::async([&] {
             metadata.get_or_create_components_digests();
             metadata.digest = serialized_checksum(_sst->get_version(), metadata.data);
-            auto w = _sst->make_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
-            write(_sst->get_version(), w, metadata);
-            w.close();
+            auto w = _sst->make_digests_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
+            write(_sst->get_version(), *w, metadata);
+            w->close();
         });
     }
 public:
