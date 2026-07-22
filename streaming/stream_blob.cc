@@ -10,6 +10,7 @@
 #include "db/config.hh"
 #include "message/messaging_service.hh"
 #include "streaming/stream_blob.hh"
+#include "sstables/exceptions.hh"
 #include "streaming/stream_plan.hh"
 #include "utils/pretty_printers.hh"
 #include "utils/error_injection.hh"
@@ -24,6 +25,7 @@
 #include "sstables/types.hh"
 #include "idl/streaming.dist.hh"
 #include "service/topology_guard.hh"
+#include <exception>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/future.hh>
@@ -362,6 +364,9 @@ future<> stream_blob_handler(replica::database& db,
         status_sent = true;
         co_await sink.close();
         sink_closed = true;
+    } catch (sstables::malformed_sstable_exception& e) {
+        utils::get_local_injector().enter("stream_blob_handler_malformed_sstable_caught");
+        error = std::current_exception();
     } catch (...) {
         error = std::current_exception();
     }
