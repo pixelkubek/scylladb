@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include "seastarx.hh"
 #include "sstables/component_type.hh"
 #include "sstables/shared_sstable.hh"
 #include "test/lib/cql_test_env.hh"
@@ -25,7 +26,7 @@
 #include "test/lib/gcs_fixture.hh"
 
 #include <boost/lexical_cast.hpp>
-#include <boost/test/tools/floating_point_comparison.hpp>
+#include <boost/test/tools/old/interface.hpp>
 #include <exception>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/test_fixture.hh>
@@ -39,6 +40,8 @@
 #include <cstdio>
 #include <sstream>
 #include <cryptopp/sha.h>
+#include <string_view>
+#include <utility>
 #include "utils/io-wrappers.hh"
 
 future<sstring> generate_file_hash(sstring filename) {
@@ -863,27 +866,26 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress, const sstr
     auto& vbw = env.view_building_worker();
     auto& global_db = db.container();
     auto& global_ms = ms.container();
-    bool receiver_handled_error = false;
+    auto receiver_handled_error = seastar::make_shared<bool>(false);
     int n_retries = 0;
     do {
         try {
             if (!verb_register) {
-                co_await smp::invoke_on_all([&global_db, &vbw, &global_ms, &expected_error_msg, &receiver_handled_error] {
-                    return global_ms.local().register_stream_blob([&global_db, &vbw, &global_ms, &expected_error_msg, &receiver_handled_error](const rpc::client_info& cinfo, streaming::stream_blob_meta meta, rpc::source<streaming::stream_blob_cmd_data> source) {
+                co_await smp::invoke_on_all([&global_db, &vbw, &global_ms, eem = std::move(expected_error_msg), receiver_handled_error] {
+                    return global_ms.local().register_stream_blob([&global_db, &vbw, &global_ms, eem = std::move(eem), receiver_handled_error](const rpc::client_info& cinfo, streaming::stream_blob_meta meta, rpc::source<streaming::stream_blob_cmd_data> source) {
                         const auto& from = cinfo.retrieve_auxiliary<locator::host_id>("host_id");
                         auto sink = global_ms.local().make_sink_for_stream_blob(source);
-                        (void)[&] -> future<> {
+                        (void)stream_blob_handler(global_db.local(), vbw.local(), global_ms.local(), from, meta, sink, source).handle_exception([sink, source, ms = global_ms.local().shared_from_this(), eem = std::move(eem), receiver_handled_error] (std::exception_ptr eptr) {
                             try {
-                                co_await stream_blob_handler(global_db.local(), vbw.local(), global_ms.local(), from, meta, sink, source);
+                                std::rethrow_exception(eptr);
                             } catch (malformed_sstable_exception& e) {
-                                if (std::string_view{e.what()}.contains(expected_error_msg)) {
-                                    receiver_handled_error = true;
+                                if (std::string_view{e.what()}.contains(eem)) {
+                                    *receiver_handled_error = true;
                                 }
                             } catch (...) {
-                                auto eptr = std::current_exception();
                                 testlog.warn("Failed to run stream blob handler: {}", eptr);
                             }
-                        }();
+                        });
                         return make_ready_future<rpc::sink<streaming::stream_blob_cmd_data>>(sink);
                     });
                 });
@@ -947,7 +949,7 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress, const sstr
         }
     } while (false);
 
-    BOOST_ASSERT(receiver_handled_error);
+    BOOST_REQUIRE(*receiver_handled_error);
 
     if (verb_register) {
         co_await smp::invoke_on_all([&global_ms] {
