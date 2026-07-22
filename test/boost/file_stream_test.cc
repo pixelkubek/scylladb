@@ -619,11 +619,6 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_stream_toc_digest_mismatched) {
     test_sstable_stream(compress_sstable::no, corrupt_component_fn(component_type::TOC), "digest mismatch");
 }
 
-SEASTAR_THREAD_TEST_CASE(test_sstable_stream_toc_digest_mismatched_rx) {
-    scoped_error_injection error_injection("stream_blob_rx_data_corruption");
-    test_sstable_stream(compress_sstable::no, [](shared_sstable){ return make_ready_future(); }, "digest mismatch");
-}
-
 // Exercises the sstable_stream_sink_impl::output() path with local and object storage.
 // Before the fix, output() used open_file() which for S3 returns a readable_file
 // (read-only). Writing through it threw std::logic_error("unsupported operation
@@ -858,9 +853,8 @@ SEASTAR_TEST_CASE(test_ranged_data_source_skip) {
     BOOST_REQUIRE_EQUAL(buf.size(), len - off);
 }
 
-using compress_sstable = bool_class<struct compress_sstable_tag>;
 static future<>
-do_test_sstable_stream2(cql_test_env& env, compress_sstable compress) {
+do_test_sstable_stream_receiver_corruption(cql_test_env& env, component_type corrupted_component) {
     sstables::scoped_no_abort_on_malformed_sstable_error no_abort;
     bool verb_register = false;
     auto ops_id = file_stream_id::create_random_id();
@@ -889,11 +883,7 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress) {
             sstring ks_stmt = "CREATE KEYSPACE ks_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}";
 
             co_await env.execute_cql(ks_stmt + ";");
-            if (compress) {
-                co_await env.execute_cql("CREATE TABLE ks_test.cf (pk text PRIMARY KEY, v int);");
-            } else {
-                co_await env.execute_cql("CREATE TABLE ks_test.cf (pk text PRIMARY KEY, v int) WITH compression = { 'sstable_compression' : '' };");
-            }
+            co_await env.execute_cql("CREATE TABLE ks_test.cf (pk text PRIMARY KEY, v int);");
 
             for (int i = 0; i < 10; i++) {
                 co_await env.execute_cql(format("INSERT INTO ks_test.cf (pk, v) VALUES ('key_{}', {});", i, i * 10));
@@ -927,7 +917,7 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress) {
 
                 auto type = source->type();
                 std::unique_ptr<sstable_stream_source> maybe_corrupted_source;
-                if (source->type() == component_type::Statistics) {
+                if (source->type() == corrupted_component) {
                     maybe_corrupted_source = std::make_unique<corrupted_sstable_stream_source_impl>(std::move(source), sst_snapshot.sst, type);
                 } else {
                     maybe_corrupted_source = std::move(source);
@@ -961,15 +951,34 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress) {
     }
 }
 
-static void test_sstable_stream2(compress_sstable compress, cql_test_config cfg = {}) {
+static void test_sstable_stream_receiver_corruption(component_type corrupted_type) {
+    cql_test_config cfg{};
     cfg.ms_listen = true;
     do_with_cql_env_thread([&](cql_test_env& env) {
         scoped_error_injection receiver_caught_error_injection("stream_blob_handler_malformed_sstable_caught");
-        do_test_sstable_stream2(env, compress).get();
+        do_test_sstable_stream_receiver_corruption(env, component_type::Scylla).get();
     }, cfg).get();
 }
 
-SEASTAR_THREAD_TEST_CASE(test_mytest) {
-    // scoped_error_injection error_injection("stream_blob_rx_data_corruption");
-    test_sstable_stream2(compress_sstable::no);
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_scylla) {
+    test_sstable_stream_receiver_corruption(component_type::Scylla);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_toc) {
+    test_sstable_stream_receiver_corruption(component_type::TOC);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_statistics) {
+    test_sstable_stream_receiver_corruption(component_type::Statistics);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_rows) {
+    test_sstable_stream_receiver_corruption(component_type::Rows);
+}
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_partitions) {
+    test_sstable_stream_receiver_corruption(component_type::Partitions);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_data) {
+    test_sstable_stream_receiver_corruption(component_type::Data);
 }
