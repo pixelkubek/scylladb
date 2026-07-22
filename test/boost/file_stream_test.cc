@@ -26,9 +26,11 @@
 #include "test/lib/test_utils.hh"
 #include "test/lib/gcs_fixture.hh"
 
+#include <algorithm>
 #include <boost/lexical_cast.hpp>
 #include <boost/test/tools/old/interface.hpp>
 #include <exception>
+#include <memory>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/test_fixture.hh>
 #include <seastar/testing/thread_test_case.hh>
@@ -922,7 +924,15 @@ do_test_sstable_stream2(cql_test_env& env, compress_sstable compress) {
                 auto& info = files.emplace_back();
                 info.filename = source->component_basename();
                 info.fops = file_ops::stream_sstables;
-                info.source = [source = std::move(source)](const file_input_stream_options& foptions) mutable -> future<input_stream<char>> {
+
+                auto type = source->type();
+                std::unique_ptr<sstable_stream_source> maybe_corrupted_source;
+                if (source->type() == component_type::Statistics) {
+                    maybe_corrupted_source = std::make_unique<corrupted_sstable_stream_source_impl>(std::move(source), sst_snapshot.sst, type);
+                } else {
+                    maybe_corrupted_source = std::move(source);
+                }
+                info.source = [source = std::move(maybe_corrupted_source)](const file_input_stream_options& foptions) mutable -> future<input_stream<char>> {
                     co_return co_await source->input(foptions);
                 };
             }
@@ -960,6 +970,6 @@ static void test_sstable_stream2(compress_sstable compress, cql_test_config cfg 
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mytest) {
-    scoped_error_injection error_injection("stream_blob_rx_data_corruption");
+    // scoped_error_injection error_injection("stream_blob_rx_data_corruption");
     test_sstable_stream2(compress_sstable::no);
 }
