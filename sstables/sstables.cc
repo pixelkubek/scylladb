@@ -4459,13 +4459,25 @@ private:
         });
     }
 
-future<> validate_digest() override {
+    future<> validate_digest() {
         switch (_type) {
         case component_type::TOC:
         case component_type::TemporaryTOC:
             break;
         case component_type::Scylla:
-        
+            co_await load_metadata();
+            if (auto& metadata = _sst->get_shared_components().scylla_metadata; metadata) {
+                auto scylla_digest = metadata->digest;
+                if (scylla_digest) {
+                    co_await seastar::async([&] {
+                        auto real_digest = serialized_checksum(_sst->get_version(), metadata->data);
+                        if (*scylla_digest != real_digest) {
+                            throw_malformed_sstable_exception("testdsgfjbn");
+                        }
+                    });
+                }
+            }
+            break;
         default:
             co_await load_metadata();
             if (auto& metadata = _sst->get_shared_components().scylla_metadata; metadata && metadata->get_components_digests()) {
