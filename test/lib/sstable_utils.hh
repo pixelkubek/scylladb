@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <memory>
 #include <optional>
 
 #include "sstables/sstables.hh"
@@ -302,3 +303,10 @@ inline shared_sstable make_sstable_easy(test_env& env, lw_shared_ptr<replica::me
 
 future<lw_shared_ptr<replica::memtable>> make_memtable(schema_ptr s, const utils::chunked_vector<mutation>& muts);
 std::vector<replica::memtable*> active_memtables(replica::table& t);
+
+class corrupted_sstable_stream_source_impl : public sstable_stream_source {
+    std::unique_ptr<sstable_stream_source> _wrapped;
+public:
+    corrupted_sstable_stream_source_impl(std::unique_ptr<sstable_stream_source> wrapped, sstables::shared_sstable sst, component_type type);
+    future<input_stream<char>> input(const file_input_stream_options& opts) const;
+};
