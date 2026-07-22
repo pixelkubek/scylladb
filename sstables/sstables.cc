@@ -4452,13 +4452,35 @@ private:
         options.buffer_size = default_sstable_buffer_size;
         co_await seastar::async([&] {
             metadata.get_or_create_components_digests();
-            auto computed_digest = serialized_checksum(_sst->get_version(), metadata.data);
-            _sst->validate_component_digest(component_type::Scylla, computed_digest);
-            metadata.digest = computed_digest;
+            metadata.digest = serialized_checksum(_sst->get_version(), metadata.data);
             auto w = _sst->make_component_file_writer(component_type::Scylla, std::move(options), open_flags::wo | open_flags::create).get();
             write(_sst->get_version(), w, metadata);
             w.close();
         });
+    }
+
+future<> validate_digest() override {
+        switch (_type) {
+        case component_type::TOC:
+        case component_type::TemporaryTOC:
+            break;
+        case component_type::Scylla:
+        
+        default:
+            co_await load_metadata();
+            if (auto& metadata = _sst->get_shared_components().scylla_metadata; metadata && metadata->get_components_digests()) {
+                // Use the digest map directly, as recognized componenets may not be correctly set.
+                auto& digest_map = metadata->get_components_digests()->map;
+                auto it = digest_map.find(_type);
+                if (it == digest_map.end()) {
+                    co_return;
+                }
+                auto expected = it->second;
+                if (expected != _digest) {
+                    throw_malformed_sstable_exception(fmt::format("digest mismatch during file streaming for component {}: expected: {}, calculated: {}", _type, expected, _digest));
+                }
+            }
+        }
     }
 public:
     future<output_stream<char>> output(const file_open_options& foptions, const file_output_stream_options& stream_options) override {
@@ -4485,6 +4507,7 @@ public:
         co_return output_stream<char>(std::move(checksummed_sink));
     }
     future<shared_sstable> close() override {
+        co_await validate_digest();
         if (_last_component) {
             // If we are the last component in a sequence, we can seal the table.
             if (!_leave_unsealed) {
@@ -4502,23 +4525,6 @@ public:
         // TODO: if we are the last component (or really always), should we remove all component files?
         // For now, this remains the responsibility of calling code (see handle_tablet_migration etc)
         co_await _sst->_storage->unlink_component(*_sst, _type);
-    }
-    uint32_t get_digest() const noexcept override {
-        return _digest;
-    }
-    future<> validate_digest() override {
-        co_await load_metadata();
-        if (auto& metadata = _sst->get_shared_components().scylla_metadata; metadata && metadata->get_components_digests()) {
-            auto& digest_map = metadata->get_components_digests()->map;
-            auto it = digest_map.find(_type);
-            if (it == digest_map.end()) {
-                co_return;
-            }
-            auto expected = it->second;
-            if (expected != _digest) {
-                throw_malformed_sstable_exception(fmt::format("digest mismatch: expected: {}, calculated: {}", expected, _digest));
-            }
-        }
     }
 };
 

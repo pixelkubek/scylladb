@@ -927,6 +927,10 @@ do_test_sstable_stream_receiver_corruption(cql_test_env& env, component_type cor
                 };
             }
 
+            BOOST_REQUIRE(!files.empty());
+
+            files.back().fops = file_ops::load_sstables;
+
             size_t stream_bytes = co_await tablet_stream_files(ms, std::move(files), targets, table_id, ops_id, service::null_topology_guard, false);
             co_await mark_tablet_stream_done(ops_id);
             testlog.info("do_test_sstable_stream[{}] status=ok stream_bytes={}", ops_id, stream_bytes);
@@ -956,7 +960,7 @@ static void test_sstable_stream_receiver_corruption(component_type corrupted_typ
     cfg.ms_listen = true;
     do_with_cql_env_thread([&](cql_test_env& env) {
         scoped_error_injection receiver_caught_error_injection("stream_blob_handler_malformed_sstable_caught");
-        do_test_sstable_stream_receiver_corruption(env, component_type::Scylla).get();
+        do_test_sstable_stream_receiver_corruption(env, corrupted_type).get();
     }, cfg).get();
 }
 
@@ -972,11 +976,8 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_statistics) {
     test_sstable_stream_receiver_corruption(component_type::Statistics);
 }
 
-SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_rows) {
-    test_sstable_stream_receiver_corruption(component_type::Rows);
-}
-SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_partitions) {
-    test_sstable_stream_receiver_corruption(component_type::Partitions);
+SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_index) {
+    test_sstable_stream_receiver_corruption(component_type::Index);
 }
 
 SEASTAR_THREAD_TEST_CASE(test_sstable_stream_receiver_corruption_data) {

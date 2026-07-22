@@ -462,7 +462,7 @@ future<> stream_blob_handler(replica::database& db, db::view::view_building_work
                         co_return;
                     }
                     blogger.info("Validating after stream {}", meta.filename);
-                    co_await sstable_sink->validate_digest();
+                    // co_await sstable_sink->validate_digest();
                     auto sst = co_await sstable_sink->close();
                     if (sst) {
                         blogger.debug("stream_sstables[{}] Loading sstable {} on shard {}", meta.ops_id, sst->toc_filename(), meta.dst_shard_id);
