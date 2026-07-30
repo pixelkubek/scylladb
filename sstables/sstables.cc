@@ -4435,6 +4435,7 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
                 co_await r.close();
 
                 tmp.remove_extension_attributes();
+                tmp.set_automatic_scrub_timestamp(db_clock::now());
 
                 std::vector<temporary_buffer<char>> bufs;
 

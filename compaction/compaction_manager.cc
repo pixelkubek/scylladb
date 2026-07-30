@@ -1061,6 +1061,7 @@ compaction_manager::compaction_manager(config cfg, abort_source& as, tasks::task
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(std::move(cfg))
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
+    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), static_shares(), _cfg.max_shares.get(), [this] () -> float {
         _last_backlog = backlog();
         auto b = _last_backlog / available_memory();
@@ -1094,6 +1095,7 @@ compaction_manager::compaction_manager(tasks::task_manager& tm)
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(config{ .available_memory = 1 })
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
+    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), 1, std::nullopt, [] () -> float { return 1.0; }))
     , _backlog_manager(_compaction_controller)
     , _update_compaction_static_shares_action([] { return make_ready_future<>(); })
@@ -1149,8 +1151,12 @@ void compaction_manager::enable() {
 
     _compaction_submission_timer.cancel();
     _compaction_submission_timer.arm_periodic(periodic_compaction_submission_interval());
+    _automatic_scrub_submission_timer.cancel();
+    _automatic_scrub_submission_timer.arm_periodic(automatic_scrub_submission_interval());
     throwing_assert(!_waiting_reevaluation);
     _waiting_reevaluation.emplace(postponed_compactions_reevaluation());
+    throwing_assert(!_waiting_automatic_scrub_reevaluation);
+    _waiting_automatic_scrub_reevaluation.emplace(automatic_scrub_reevaluation());
     cmlog.info("Enabled");
 }
 
@@ -1164,6 +1170,42 @@ std::function<void()> compaction_manager::compaction_submission_callback() {
         }
         reevaluate_postponed_compactions();
     };
+}
+
+std::function<void()> compaction_manager::automatic_scrub_submission_callback() {
+    return [this] mutable {
+        for (auto& [table, state] : _compaction_state) {
+            delay_automatic_scrub_for_table(table);
+        }
+        reevaluate_automatic_scrub();
+    };
+}
+
+future<> compaction_manager::automatic_scrub_reevaluation() {
+    while (true) {
+       co_await _automatic_scrub_reevaluation.when();
+       if (is_disabled()) {
+           _awaiting_automatic_scrub.clear();
+           co_return;
+       }
+       // A task_state being reevaluated can re-insert itself into postponed list, which is the reason
+       // for moving the list to be processed into a local.
+       auto awaiting = std::exchange(_awaiting_automatic_scrub, {});
+       try {
+           for (auto it = awaiting.begin(); it != awaiting.end();) {
+               compaction_group_view* t = *it;
+               it = awaiting.erase(it);
+               // skip reevaluation of a compaction_group_view that became invalid post its removal
+               if (!_compaction_state.contains(t)) {
+                   continue;
+               }
+               cmlog.debug("resubmitting automatic scrub for table {} [{}]", *t, fmt::ptr(t));
+               co_await submit_automatic_scrub(*t);
+           }
+       } catch (...) {
+           _awaiting_automatic_scrub.insert(awaiting.begin(), awaiting.end());
+       }
+   }
 }
 
 future<> compaction_manager::postponed_compactions_reevaluation() {
@@ -1198,6 +1240,10 @@ void compaction_manager::reevaluate_postponed_compactions() noexcept {
     _postponed_reevaluation.signal();
 }
 
+void compaction_manager::reevaluate_automatic_scrub() noexcept {
+    _automatic_scrub_reevaluation.signal();
+}
+
 future<> compaction_manager::stop_postponed_compactions() noexcept {
     auto waiting_reevaluation = std::exchange(_waiting_reevaluation, std::nullopt);
     if (!waiting_reevaluation) {
@@ -1208,8 +1254,22 @@ future<> compaction_manager::stop_postponed_compactions() noexcept {
     return std::move(*waiting_reevaluation);
 }
 
+future<> compaction_manager::stop_automatic_scrub() noexcept {
+    auto waiting_reevaluation = std::exchange(_waiting_automatic_scrub_reevaluation, std::nullopt);
+    if (!waiting_reevaluation) {
+        return make_ready_future();
+    }
+    // Trigger a signal to properly exit from postponed_compactions_reevaluation() fiber
+    reevaluate_automatic_scrub();
+    return std::move(*waiting_reevaluation);
+}
+
 void compaction_manager::postpone_compaction_for_table(compaction_group_view* t) {
     _postponed.insert(t);
+}
+
+void compaction_manager::delay_automatic_scrub_for_table(compaction_group_view* t) {
+    _awaiting_automatic_scrub.insert(t);
 }
 
 void compaction_manager::stop_tasks(const std::vector<shared_ptr<compaction_task_executor>>& tasks, sstring reason) noexcept {
@@ -1289,9 +1349,11 @@ future<> compaction_manager::drain() {
     ++_disabled_state_count;
 
     _compaction_submission_timer.cancel();
+    _automatic_scrub_submission_timer.cancel();
     // Stop ongoing compactions, if the request has not been sent already and wait for them to stop.
     co_await stop_ongoing_compactions("drain");
     co_await stop_postponed_compactions();
+    co_await stop_automatic_scrub();
     cmlog.info("Drained");
 }
 
@@ -1336,9 +1398,11 @@ future<> compaction_manager::really_do_stop() noexcept {
         on_fatal_internal_error(cmlog, format("{} tasks still exist after being stopped", _tasks.size()));
     }
     co_await stop_postponed_compactions();
+    co_await stop_automatic_scrub();
     co_await _sys_ks.close();
     _weight_tracker.clear();
     _compaction_submission_timer.cancel();
+    _automatic_scrub_submission_timer.cancel();
     co_await _compaction_controller.shutdown();
     co_await _update_compaction_static_shares_action.join();
     cmlog.info("Stopped");
@@ -2791,6 +2855,59 @@ compaction_backlog_manager::~compaction_backlog_manager() {
 
 compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_group_view& t) {
     return t.get_backlog_tracker();
+}
+
+future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {    
+    if (t.is_auto_compaction_disabled_by_user()) {
+        co_return;
+    }
+
+    auto gh = start_compaction(t);
+    if (!gh) {
+        co_return;
+    }
+
+    std::vector<sstables::shared_sstable> sstables_to_scrub, sstables_to_rewrite;
+    compacting_sstable_registration validating(*this, get_compaction_state(&t));
+    compacting_sstable_registration scrubbing(*this, get_compaction_state(&t));
+
+    auto scrub_period = _cfg.scrub_period.get();    
+    auto now = db_clock::now();
+    auto scrub_older_than = now - scrub_period;
+    auto filter = [scrub_older_than] (const sstables::shared_sstable& sst) {
+        return sst->should_be_automatically_scrubbed(scrub_older_than);
+    };
+    co_await run_with_compaction_disabled(t, [&sstables_to_scrub, &sstables_to_rewrite, &validating, &scrubbing, &t, &filter] () -> future<> {
+        // All sstables must be included.
+        auto all_sstables = co_await get_all_sstables(t);
+        auto eligible_for_auto_scrub = all_sstables | std::views::filter(filter);
+
+        for (const auto& sst : eligible_for_auto_scrub) {
+            if (sst->has_scylla_component()) {
+                sstables_to_scrub.emplace_back(sst);
+            } else {
+                sstables_to_rewrite.emplace_back(sst);
+            }
+        }
+        
+        validating.register_compacting(sstables_to_scrub);
+        scrubbing.register_compacting(sstables_to_rewrite);
+    }, "disabling compaction to run periodic validation");
+    if (sstables_to_scrub.empty()) {
+        co_return;
+    }
+
+    tasks::task_info info{};
+    cmlog.info("Performing automatic scrub for sstables {}", sstables_to_scrub);
+    // OK to drop future.
+    // waited via compaction_task_executor::compaction_done()
+    (void)perform_compaction<validate_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(sstables_to_scrub), std::move(validating),compaction_manager::quarantine_invalid_sstables::no, compaction_manager::may_update_scrub_time::yes).then_wrapped([gh = std::move(gh)] (auto f) { f.ignore_ready_future(); });
+
+
+    owned_ranges_ptr owned_ranges_ptr{};
+    sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
+    auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
+    (void)perform_compaction<rewrite_sstables_compaction_task_executor>(throw_if_stopping::no, info, &t, info.id, std::move(scrub_abort), std::move(owned_ranges_ptr), std::move(sstables_to_rewrite), std::move(scrubbing), can_purge_tombstones::no, std::move(option_desc));
 }
 
 }

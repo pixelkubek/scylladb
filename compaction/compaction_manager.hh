@@ -84,6 +84,7 @@ public:
         utils::updateable_value<float> max_shares = utils::updateable_value<float>(0);
         utils::updateable_value<uint32_t> throughput_mb_per_sec = utils::updateable_value<uint32_t>(0);
         std::chrono::seconds flush_all_tables_before_major = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::days(1));
+        utils::updateable_value<std::chrono::seconds> scrub_period;
     };
 
 public:
@@ -129,9 +130,12 @@ private:
     std::unordered_set<sstables::shared_sstable> _compacting_sstables;
 
     std::optional<future<>> _waiting_reevaluation;
+    std::optional<future<>> _waiting_automatic_scrub_reevaluation;
     condition_variable _postponed_reevaluation;
+    condition_variable _automatic_scrub_reevaluation;
     // tables that wait for compaction but had its submission postponed due to ongoing compaction.
     std::unordered_set<compaction::compaction_group_view*> _postponed;
+    std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
     // tracks taken weights of ongoing compactions, only one compaction per weight is allowed.
     // weight is value assigned to a compaction job that is log base N of total size of all input sstables.
     std::unordered_set<int> _weight_tracker;
@@ -150,12 +154,15 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
+    std::function<void()> automatic_scrub_submission_callback();
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
     static constexpr std::chrono::seconds periodic_compaction_submission_interval() { return std::chrono::seconds(3600); }
+    static constexpr std::chrono::seconds automatic_scrub_submission_interval() { return std::chrono::seconds(3600); }
 
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
+    timer<lowres_clock> _automatic_scrub_submission_timer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;
     optimized_optional<abort_source::subscription> _early_abort_subscription;
@@ -229,15 +236,21 @@ private:
     // table still exists and compaction is not disabled for the table.
     inline bool can_proceed(compaction::compaction_group_view* t) const;
 
+    future<> automatic_scrub_reevaluation();
     future<> postponed_compactions_reevaluation();
     void reevaluate_postponed_compactions() noexcept;
+    void reevaluate_automatic_scrub() noexcept;
     future<> stop_postponed_compactions() noexcept;
+    future<> stop_automatic_scrub() noexcept;
     // Postpone compaction for a table that couldn't be executed due to ongoing
     // similar-sized compaction.
     void postpone_compaction_for_table(compaction::compaction_group_view* t);
+    void delay_automatic_scrub_for_table(compaction::compaction_group_view* t);
 
     using quarantine_invalid_sstables = compaction_type_options::scrub::quarantine_invalid_sstables;
-    future<compaction_stats_opt> perform_sstable_scrub_validate_mode(compaction::compaction_group_view& t, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables);
+    using may_update_scrub_time = compaction_type_options::scrub::may_update_scrub_time;
+    future<compaction_stats_opt> perform_sstable_scrub_validate_mode(compaction::compaction_group_view& t, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables,
+        may_update_scrub_time may_update_timestamp = may_update_scrub_time::yes);
     future<> update_static_shares(float shares);
 
     using get_candidates_func = std::function<future<std::vector<sstables::shared_sstable>>()>;
@@ -334,6 +347,7 @@ public:
 
     // Submit a table to be compacted.
     void submit(compaction::compaction_group_view& t);
+    future<> submit_automatic_scrub(compaction::compaction_group_view& t);
 
     // Can regular compaction be performed in the given table
     bool can_perform_regular_compaction(compaction::compaction_group_view& t);
