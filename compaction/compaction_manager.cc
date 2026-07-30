@@ -1155,7 +1155,10 @@ void compaction_manager::enable() {
     _compaction_submission_timer.cancel();
     _compaction_submission_timer.arm_periodic(periodic_compaction_submission_interval());
     _automatic_scrub_submission_timer.cancel();
-    _automatic_scrub_submission_timer.arm_periodic(automatic_scrub_submission_interval());
+    _automatic_scrub_submission_timer.arm_periodic(_cfg.scrub_period.get());
+    _scrub_period_observer = _cfg.scrub_period.observe([this] (const auto& period) {
+        _automatic_scrub_submission_timer.arm_periodic(period);
+    });
     throwing_assert(!_waiting_reevaluation);
     _waiting_reevaluation.emplace(postponed_compactions_reevaluation());
     throwing_assert(!_waiting_automatic_scrub_reevaluation);
@@ -1352,6 +1355,8 @@ future<> compaction_manager::drain() {
     ++_disabled_state_count;
 
     _compaction_submission_timer.cancel();
+
+    _scrub_period_observer.reset();
     _automatic_scrub_submission_timer.cancel();
     // Stop ongoing compactions, if the request has not been sent already and wait for them to stop.
     co_await stop_ongoing_compactions("drain");
@@ -1405,6 +1410,7 @@ future<> compaction_manager::really_do_stop() noexcept {
     co_await _sys_ks.close();
     _weight_tracker.clear();
     _compaction_submission_timer.cancel();
+    _scrub_period_observer.reset();
     _automatic_scrub_submission_timer.cancel();
     co_await _compaction_controller.shutdown();
     co_await _update_compaction_static_shares_action.join();
@@ -2911,9 +2917,7 @@ static future<automatic_scrub_submission_sstables> register_automatic_scrub_ssta
 }
 
 future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {    
-    if (t.is_auto_compaction_disabled_by_user()) {
-        co_return;
-    }
+    cmlog.warn("submit_automatic_scrub");
 
     auto validate_gh = start_compaction(t);
     auto rewrite_gh = start_compaction(t);
@@ -2952,7 +2956,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
             info.id, 
             std::move(registered.to_validate), 
             std::move(validating),
-            compaction_manager::quarantine_invalid_sstables::no, compaction_manager::may_update_scrub_time::yes)
+            compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes)
         .then_wrapped([gh = std::move(validate_gh)] (auto f) { f.ignore_ready_future(); });        
     }
 

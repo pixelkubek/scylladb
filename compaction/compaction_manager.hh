@@ -158,10 +158,11 @@ private:
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
     static constexpr std::chrono::seconds periodic_compaction_submission_interval() { return std::chrono::seconds(3600); }
-    static constexpr std::chrono::seconds automatic_scrub_submission_interval() { return std::chrono::seconds(3600); }
 
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
+
+    std::optional<utils::observer<std::chrono::seconds>> _scrub_period_observer;
     timer<lowres_clock> _automatic_scrub_submission_timer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;

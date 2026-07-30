@@ -1654,7 +1654,7 @@ void sstable::set_automatic_scrub_timestamp(db_clock::time_point timestamp) {
 bool sstable::should_be_automatically_scrubbed(db_clock::time_point scrub_older_than) const {
     if (!has_scylla_component()) {
         // Automatic scrub would require adding a Scylla component.
-        return false;
+        return true;
     }
 
     auto& metadata = *_components->scylla_metadata;
