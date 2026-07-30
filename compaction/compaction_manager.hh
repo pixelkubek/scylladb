@@ -347,6 +347,7 @@ public:
 
     // Submit a table to be compacted.
     void submit(compaction::compaction_group_view& t);
+
     future<> submit_automatic_scrub(compaction::compaction_group_view& t);
 
     // Can regular compaction be performed in the given table
