@@ -2726,6 +2726,12 @@ void compaction_manager::propagate_replacement(compaction_group_view& t,
     }
 }
 
+future<> compaction_manager::on_suspected_disk_corruption() {
+    cmlog.error("Disk corruption detected");
+    general_disk_error();
+    co_return;
+}
+
 strategy_control& compaction_manager::get_strategy_control() const noexcept {
     return *_strategy_control;
 }

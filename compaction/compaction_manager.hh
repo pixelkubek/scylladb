@@ -284,6 +284,9 @@ private:
     // This constructor is supposed to only be used for testing so lets be more explicit
     // about invoking it. Ref #10146
     compaction_manager(tasks::task_manager& tm);
+
+    // Called when disk corruption is suspected e.g. by automatic scrub.
+    future<> on_suspected_disk_corruption();
 public:
     compaction_manager(config cfg, abort_source& as, tasks::task_manager& tm);
     ~compaction_manager();
