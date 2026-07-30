@@ -11,10 +11,12 @@
 #include "compaction_strategy.hh"
 #include "compaction_backlog_manager.hh"
 #include "compaction_weight_registration.hh"
+#include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/sstables_manager.hh"
 #include <memory>
 #include <fmt/ranges.h>
+#include <ranges>
 #include <seastar/core/future.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/coroutine.hh>
@@ -30,6 +32,7 @@
 #include "db/config.hh"
 #include "tombstone_gc-internals.hh"
 #include <cmath>
+#include <vector>
 #include "utils/labels.hh"
 
 static logging::logger cmlog("compaction_manager");
@@ -2083,7 +2086,7 @@ compaction_manager::rewrite_sstables_component(compaction_group_view& t,
     if (!gh) {
         co_return std::nullopt;
     }
-
+    // MAYBE important
     // Capture candidates from view `t` and register them as compacting while
     // compaction is disabled on `t`, so that:
     //   1) every captured sstable belongs to `t`'s compaction group (no
@@ -2146,6 +2149,7 @@ private:
         switch_state(state::active);
         std::exception_ptr ex;
         try {
+            // auto replacer
             auto desc = compaction_descriptor(
                     { sst },
                     sst->get_sstable_level(),

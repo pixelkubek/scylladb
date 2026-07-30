@@ -47,6 +47,7 @@
 #include "mutation_writer/token_group_based_splitting_writer.hh"
 #include "mutation/mutation_source_metadata.hh"
 #include "mutation/mutation_fragment_stream_validator.hh"
+#include "sstables/types_fwd.hh"
 #include "utils/assert.hh"
 #include "utils/error_injection.hh"
 #include "utils/chunked_vector.hh"
