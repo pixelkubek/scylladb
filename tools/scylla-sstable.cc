@@ -1345,6 +1345,7 @@ const char* to_string(sstables::scylla_metadata_type t) {
         case sstables::scylla_metadata_type::Schema: return "schema";
         case sstables::scylla_metadata_type::ComponentsDigests: return "components_digests";
         case sstables::scylla_metadata_type::LargeDataRecords: return "large_data_records";
+        case sstables::scylla_metadata_type::AutomaticScrubTimestamp: return "automatic_scrub_timestamp";
     }
     std::abort();
 }
@@ -1542,6 +1543,15 @@ public:
 
         _writer.EndObject();
     }
+
+    void operator()(const sstables::automatic_scrub_type& as) const {
+        _writer.StartObject();
+
+        _writer.Key("timestamp");
+        _writer.Int64(as.timestamp);
+
+        _writer.EndObject();
+    } 
 };
 
 void dump_scylla_metadata_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables,

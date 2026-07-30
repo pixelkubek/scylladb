@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include "db_clock.hh"
 #include "disk_types.hh"
+#include <optional>
 #include <seastar/core/enum.hh>
 #include <seastar/core/weak_ptr.hh>
 #include "bytes.hh"
@@ -557,6 +559,7 @@ enum class scylla_metadata_type : uint32_t {
     Schema = 11,
     ComponentsDigests = 12,
     LargeDataRecords = 13,
+    AutomaticScrubTimestamp = 14,
 };
 
 // UUID is used for uniqueness across nodes, such that an imported sstable
@@ -675,6 +678,13 @@ struct sstable_schema_type {
     auto describe_type(sstable_version_types v, Describer f) { return f(id, version, keyspace_name, table_name, columns); }
 };
 
+struct automatic_scrub_type {
+    int64_t timestamp;
+
+    template <typename Describer>
+    auto describe_type(sstable_version_types v, Describer f) { return f(timestamp); }
+};
+
 struct scylla_metadata {
     using extension_attributes = disk_hash<uint32_t, disk_string<uint32_t>, disk_string<uint32_t>>;
     using large_data_stats = disk_hash<uint32_t, large_data_type, large_data_stats_entry>;
@@ -700,7 +710,8 @@ struct scylla_metadata {
             disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::SSTableIdentifier, sstable_identifier>,
             disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::Schema, sstable_schema>,
             disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::ComponentsDigests, components_digests>,
-            disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::LargeDataRecords, large_data_records>
+            disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::LargeDataRecords, large_data_records>,
+            disk_tagged_union_member<scylla_metadata_type, scylla_metadata_type::AutomaticScrubTimestamp, automatic_scrub_type>
             > data;
     std::optional<uint32_t> digest;
 
@@ -749,6 +760,16 @@ struct scylla_metadata {
     }
     const components_digests* get_components_digests() const {
         return data.get<scylla_metadata_type::ComponentsDigests, components_digests>();
+    }
+    std::optional<db_clock::time_point> get_automatic_scrub_timestamp() const {
+        auto* ts = data.get<scylla_metadata_type::AutomaticScrubTimestamp, automatic_scrub_type>();
+        if (!ts) {
+            return std::nullopt;
+        }
+        return db_clock::time_point(db_clock::duration(ts->timestamp));
+    }
+    void set_automatic_scrub_timestamp(db_clock::time_point timestamp) {
+        data.set<scylla_metadata_type::AutomaticScrubTimestamp>(automatic_scrub_type(timestamp.time_since_epoch().count()));
     }
 };
 

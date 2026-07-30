@@ -1639,6 +1639,35 @@ std::optional<uint32_t> sstable::get_component_digest(component_type c) const {
     return it->second;
 }
 
+std::optional<db_clock::time_point> sstable::get_automatic_scrub_timestamp() {
+    auto& metadata = _components->scylla_metadata;
+    return metadata ? metadata->get_automatic_scrub_timestamp() : std::nullopt;
+}
+
+void sstable::set_automatic_scrub_timestamp(db_clock::time_point timestamp) {
+    auto& metadata = _components->scylla_metadata;
+    if (metadata) {
+        metadata->set_automatic_scrub_timestamp(timestamp);
+    }
+}
+
+bool sstable::should_be_automatically_scrubbed(db_clock::time_point scrub_older_than) const {
+    if (!has_scylla_component()) {
+        // Automatic scrub would require adding a Scylla component.
+        return false;
+    }
+
+    auto& metadata = *_components->scylla_metadata;
+    auto timestamp = metadata.get_automatic_scrub_timestamp();
+
+    if (!timestamp) {
+        return true;
+    }
+
+    return *timestamp < scrub_older_than;
+}
+
+
 int64_t sstable::update_repaired_at(int64_t repaired_at) {
     const stats_metadata& old_stats = get_stats_metadata();
     auto old_repaired_at = old_stats.repaired_at;
@@ -2543,6 +2572,8 @@ sstable::write_scylla_metadata(shard_id shard, struct run_identifier identifier,
     }
     _components->scylla_metadata->data.set<scylla_metadata_type::Schema>(std::move(sstable_schema));
     _components->scylla_metadata->data.set<scylla_metadata_type::ComponentsDigests>(scylla_metadata::components_digests{_components_digests});
+
+    _components->scylla_metadata->set_automatic_scrub_timestamp(db_clock::now());
 
     _components->scylla_metadata->digest = serialized_checksum(_version, _components->scylla_metadata->data);
 
