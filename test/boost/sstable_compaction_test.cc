@@ -2940,6 +2940,7 @@ void scrub_validate_corrupted_content(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -2970,12 +2971,14 @@ void scrub_validate_corrupted_file(compress_sstable compress, component_type com
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
         BOOST_REQUIRE(stats.has_value());
         BOOST_REQUIRE_GT(stats->validation_errors, 0);
-        BOOST_REQUIRE(sst->is_quarantined());
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
         BOOST_REQUIRE(in_strategy_sstables(ts).get().empty());
     });
 }
@@ -3011,12 +3014,14 @@ void scrub_validate_corrupted_digest(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
         BOOST_REQUIRE(stats.has_value());
         BOOST_REQUIRE_GT(stats->validation_errors, 0);
-        BOOST_REQUIRE(sst->is_quarantined());
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
         BOOST_REQUIRE(in_strategy_sstables(ts).get().empty());
     });
 }
@@ -3038,6 +3043,7 @@ void scrub_validate_no_digest(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3073,6 +3079,7 @@ void scrub_validate_valid(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3143,6 +3150,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_multiple_instances_unc
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
 
         utils::get_local_injector().enable("sstable_validate/pause");
@@ -3178,6 +3186,61 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_multiple_instances_unc
         BOOST_REQUIRE(sst->get_checksum() == nullptr);
 
         utils::get_local_injector().disable("sstable_validate/pause");
+    });
+}
+
+static future<bool> sstables_differ_only_by_scylla_metadata(sstables::shared_sstable sst1, sstables::shared_sstable sst2) {
+    auto sst1_test = sstables::test(sst1);
+    auto sst2_test = sstables::test(sst2);
+
+    auto& sst1_components = sst1_test.get_components();
+    auto& sst2_components = sst2_test.get_components();
+    
+    if (sst1_components != sst2_components) {
+        co_return false;
+    }
+
+    auto equal_components = sst1_components;
+    equal_components.erase(component_type::Scylla);
+
+    for (const auto& type : equal_components) {
+        auto equal = co_await tests::compare_files(sst1_test.filename(type), sst2_test.filename(type));
+        if (equal) {
+            co_return false;
+        }
+    }    
+    
+    co_return true;
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_scrub_time) {
+    scrub_test_framework<random_schema::yes> test(compress_sstable::no);
+
+    auto schema = test.schema();
+
+    auto muts = tests::generate_random_mutations(test.random_schema()).get();
+
+    test.run(schema, muts, [] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        BOOST_REQUIRE(sstables.size() == 1);
+        auto sst = sstables.front();
+
+        auto now = db_clock::now();
+        compaction::compaction_type_options::scrub opts = {
+            .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+        };
+        auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
+
+        BOOST_REQUIRE(stats.has_value());
+        
+        BOOST_REQUIRE_EQUAL(table->sstables_count(), 1);
+        auto new_sst = *table->get_sstables()->begin();
+
+        auto equal = sstables_differ_only_by_scylla_metadata(sst, new_sst).get();
+        BOOST_REQUIRE(equal);
+        
+        auto timestamp = new_sst->get_scylla_metadata()->get_automatic_scrub_timestamp();
+        BOOST_REQUIRE(timestamp);
+        BOOST_REQUIRE(*timestamp > now);
     });
 }
 
@@ -3243,6 +3306,7 @@ void scrub_validate_cassandra_compat(const compression_parameters& cp, sstring s
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = scrub::mode::validate,
             .quarantine_sstables = scrub::quarantine_invalid_sstables::no,
+            .may_update_timestamp = scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3675,7 +3739,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_quarantine_mode_test) {
             testlog.info("Scrub in validate mode");
 
             // We expect the scrub with mode=scrub::mode::validate to quarantine the sstable.
-            compaction::compaction_type_options::scrub opts = {};
+            compaction::compaction_type_options::scrub opts = {
+                .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
+            };
             opts.operation_mode = compaction::compaction_type_options::scrub::mode::validate;
             table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
