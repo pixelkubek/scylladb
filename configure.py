@@ -643,6 +643,7 @@ scylla_tests = set([
     'test/boost/snitch_reset_test',
     'test/boost/sorting_test',
     'test/boost/sstable_3_x_test',
+    'test/boost/sstable_automatic_scrub_test',
     'test/boost/sstable_conforms_to_mutation_source_test',
     'test/boost/sstable_datafile_test',
     'test/boost/sstable_generation_test',
