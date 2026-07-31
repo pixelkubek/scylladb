@@ -2944,6 +2944,7 @@ static future<automatic_scrub_submission_sstables> register_automatic_scrub_ssta
     // After a compaction finishes, it will reevaluate whether
     // auto scrub is needed.
     auto all_sstables = co_await get_all_sstables(t);
+    cmlog.warn("Considering stables for {}: {}", t, all_sstables);
     
     auto eligible_for_auto_scrub = all_sstables 
         | std::views::filter(std::move(filter))

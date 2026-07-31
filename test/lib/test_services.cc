@@ -159,7 +159,7 @@ table_for_tests::table_for_tests(sstables::sstables_manager& sstables_manager, c
     _data->cf = make_lw_shared<replica::column_family>(_data->s, std::move(cfg), make_lw_shared<replica::storage_options>(storage), cm, sstables_manager, _data->cl_stats, sstables_manager.get_cache_tracker(), nullptr);
     _data->cf->mark_ready_for_writes(nullptr);
     _data->table_s = std::make_unique<compaction_group_view>(*_data, sstables_manager);
-    cm.add(*_data->table_s);
+    // cm.add(*_data->table_s);
     _data->storage = std::move(storage);
 }
 

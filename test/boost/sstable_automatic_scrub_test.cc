@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include <seastar/testing/thread_test_case.hh>
 #include "seastarx.hh"
 
 #include <seastar/testing/test_case.hh>
@@ -26,6 +27,15 @@ future<> foreach_compaction_group_view_with_thread(table_for_tests& table, std::
             action(ts);
         });
     });
+}
+
+static future<std::vector<sstables::shared_sstable>> get_all_sstables(compaction::compaction_group_view& t) {
+    auto main_set = co_await t.main_sstable_set();
+    auto maintenance_set = co_await t.maintenance_sstable_set();
+    auto s = *main_set->all() | std::ranges::to<std::vector>();
+    auto maintenance_sstables = maintenance_set->all();
+    s.insert(s.end(), maintenance_sstables->begin(), maintenance_sstables->end());
+    co_return s;
 }
 
 class scrub_test_framework {
@@ -81,7 +91,7 @@ public:
         for (size_t i = 0; i < 5; i++) {
             auto sst = make_sstable();
             sst->load(random_schema().schema()->get_sharder()).get();
-            table->add_sstable_and_update_cache(sst).get();
+            table->add_sstable_and_update_cache(sst, offstrategy::yes).get();
         }
 
         return table;
@@ -91,9 +101,12 @@ public:
         auto table = make_table();
         auto close_cf = deferred_stop(table);
 
-        bool found_sstable = false;
+        // auto& cgv = table.as_compaction_group_view();
+        // func(table, cgv, get_all_sstables(cgv).get());
+        
+        bool found_sstable = false;        
         foreach_compaction_group_view_with_thread(table, [&] (compaction::compaction_group_view& ts) {
-            auto sstables = in_strategy_sstables(ts).get();
+            auto sstables = get_all_sstables(ts).get();
             if (sstables.empty()) {
                 return;
             }
@@ -111,6 +124,19 @@ future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
     }
 }
 
+static void corrupt_sstable(sstables::shared_sstable sst, component_type type = component_type::Data) {
+    auto f = sstables::test(sst).open_file(type, {}, {}).get();
+    auto close_f = deferred_close(f);
+    const auto wbuf_align = f.memory_dma_alignment();
+    const auto wbuf_len = f.size().get();
+    auto wbuf = seastar::temporary_buffer<char>::aligned(wbuf_align, wbuf_len);
+    std::fill(wbuf.get_write(), wbuf.get_write() + wbuf_len, 0xba);
+    auto os = output_stream<char>(sstables::test(sst).get_storage().make_component_sink(*sst, type, open_flags::wo, {}).get());
+    auto close_os = deferred_close(os);
+    os.write(std::move(wbuf)).get();
+}
+
+
 void auto_scrub_validate_corrupted_content() {
     scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
@@ -119,17 +145,25 @@ void auto_scrub_validate_corrupted_content() {
     test.run([&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
-        BOOST_REQUIRE(sstables.size() == 1);
-        auto sst = sstables.front();
+        BOOST_REQUIRE_GE(sstables.size(), 1);
+        for (sstables::shared_sstable& sst : sstables) {
+            corrupt_sstable(sst);
+        }
 
         // corrupt_sstable(sst);
 
-        // cm.trigger_auto_scrub_timer();
+        cm.trigger_auto_scrub_timer();
 
-        cm_ended_some_work(cm.get_compaction_manager()).wait();
+        sleep(std::chrono::seconds(2)).wait();
 
-        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        // cm_ended_some_work(cm.get_compaction_manager()).wait();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
     });
     
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_content) {
+    auto_scrub_validate_corrupted_content();
 }
