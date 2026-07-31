@@ -248,6 +248,8 @@ private:
     void postpone_compaction_for_table(compaction::compaction_group_view* t);
     void delay_automatic_scrub_for_table(compaction::compaction_group_view* t);
 
+    bool should_be_automatically_scrubbed(const sstables::shared_sstable&) const;
+
     using quarantine_invalid_sstables = compaction_type_options::scrub::quarantine_invalid_sstables;
     using may_update_scrub_time = compaction_type_options::scrub::may_update_scrub_time;
     future<compaction_stats_opt> perform_sstable_scrub_validate_mode(compaction::compaction_group_view& t, tasks::task_info info, quarantine_invalid_sstables quarantine_sstables,

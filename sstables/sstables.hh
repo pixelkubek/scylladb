@@ -1091,7 +1091,6 @@ public:
 
     std::optional<db_clock::time_point> get_automatic_scrub_timestamp();
     void set_automatic_scrub_timestamp(db_clock::time_point = db_clock::now());
-    bool should_be_automatically_scrubbed(db_clock::time_point scrub_older_than) const;
 
     // Gets ratio of droppable tombstone. A tombstone is considered droppable here
     // for cells and tombstones expired before the time point "GC before", which

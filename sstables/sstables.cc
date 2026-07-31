@@ -1651,22 +1651,6 @@ void sstable::set_automatic_scrub_timestamp(db_clock::time_point timestamp) {
     }
 }
 
-bool sstable::should_be_automatically_scrubbed(db_clock::time_point scrub_older_than) const {
-    if (!has_scylla_component()) {
-        // Automatic scrub would require adding a Scylla component.
-        return true;
-    }
-
-    auto& metadata = *_components->scylla_metadata;
-    auto timestamp = metadata.get_automatic_scrub_timestamp();
-
-    if (!timestamp) {
-        return true;
-    }
-
-    return *timestamp < scrub_older_than;
-}
-
 
 int64_t sstable::update_repaired_at(int64_t repaired_at) {
     const stats_metadata& old_stats = get_stats_metadata();

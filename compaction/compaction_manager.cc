@@ -1278,6 +1278,27 @@ void compaction_manager::delay_automatic_scrub_for_table(compaction_group_view* 
     _awaiting_automatic_scrub.insert(t);
 }
 
+bool compaction_manager::should_be_automatically_scrubbed(const sstables::shared_sstable& sst) const {
+    auto scrub_period = _cfg.scrub_period.get();    
+    auto now = db_clock::now();
+    auto scrub_older_than = now - scrub_period;
+
+    if (!sst->has_scylla_component()) {
+        // We don't know when it was last validated.
+        // Automatic scrub will add a Scylla component.
+        return true;
+    }
+
+    const auto& metadata = *sst->get_scylla_metadata();
+    auto timestamp = metadata.get_automatic_scrub_timestamp();
+
+    if (!timestamp) {
+        return true;
+    }
+    
+    return *timestamp < scrub_older_than;
+}
+
 void compaction_manager::stop_tasks(const std::vector<shared_ptr<compaction_task_executor>>& tasks, sstring reason) noexcept {
     // To prevent compaction from being postponed while tasks are being stopped,
     // let's stop all tasks before the deferring point below.
@@ -1508,6 +1529,15 @@ public:
         return compaction_task_executor::abort(_as);
     }
 protected:
+    future<> maybe_validate_component_digests(std::span<sstables::shared_sstable> sstables) {
+        for (const auto& sst : sstables) {
+            if (_cm.should_be_automatically_scrubbed(sst)) {
+                co_await sst->validate_digests(sstables::sstable::skip_data_digest::yes);
+            }
+            sst->set_automatic_scrub_timestamp(db_clock::now());
+        }
+    }
+    
     virtual future<> run() override {
         return perform();
     }
@@ -1576,6 +1606,8 @@ protected:
             std::exception_ptr ex;
 
             try {
+                co_await maybe_validate_component_digests(descriptor.sstables);
+                
                 bool should_update_history = this->should_update_history(descriptor.options.type());
                 compaction_result res = co_await compact_sstables(std::move(descriptor), _compaction_data, on_replace);
                 cmlog.debug("Finished minor compaction old_sstables={} new_sstables={} sstables_reapired_at={} range={} uuid={} compaction_uuid={}",
@@ -2934,12 +2966,8 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     compacting_sstable_registration validating(*this, get_compaction_state(&t));
     compacting_sstable_registration scrubbing(*this, get_compaction_state(&t));
 
-    auto scrub_period = _cfg.scrub_period.get();    
-    auto now = db_clock::now();
-    auto scrub_older_than = now - scrub_period;
-
-    auto filter = [scrub_older_than, this] (const sstables::shared_sstable& sst) {
-        return sst->should_be_automatically_scrubbed(scrub_older_than) && eligible_for_compaction(sst);
+    auto filter = [this] (const sstables::shared_sstable& sst) {
+        return should_be_automatically_scrubbed(sst) && eligible_for_compaction(sst);
     };
     
     auto registered = co_await seastar::with_semaphore(
