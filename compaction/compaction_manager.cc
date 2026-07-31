@@ -1444,7 +1444,9 @@ future<> compaction_manager::really_do_stop() noexcept {
         on_fatal_internal_error(cmlog, format("{} tasks still exist after being stopped", _tasks.size()));
     }
     co_await stop_postponed_compactions();
+    cmlog.warn("Before stopping auto scrub");
     co_await stop_automatic_scrub();
+    cmlog.warn("After stopping auto scrub");
     co_await _sys_ks.close();
     _weight_tracker.clear();
     _compaction_submission_timer.cancel();
@@ -2951,6 +2953,7 @@ static future<automatic_scrub_submission_sstables> register_automatic_scrub_ssta
         | std::ranges::to<std::vector>();
 
     if (all_sstables.size() == eligible_for_auto_scrub.size()) {
+        // Porównuje złe rzeczy. SStabelki które są już scrubed nie muszą być
         all_included = true;
     }
 
@@ -2996,6 +2999,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         }
     );
 
+    cmlog.warn("To validate for {}: {}", t, registered.to_validate);
     if (!registered.to_validate.empty()) {
         tasks::task_info info{};
         cmlog.info("Performing automatic validation for sstables {}", registered.to_validate);
@@ -3012,7 +3016,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         .then_wrapped([gh = std::move(validate_gh)] (auto f) { f.ignore_ready_future(); });        
     }
 
-
+    cmlog.warn("To validate for {}: {}", t, registered.to_rewrite);
     if (!registered.to_rewrite.empty()) {
         tasks::task_info info{};
         owned_ranges_ptr owned_ranges_ptr{};
@@ -3038,7 +3042,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         // If not all sstables which should be validated were included,
         // schedule this group view for another automatic scrub.
         // It will be reevaluated once some compaction finishes.
-        delay_automatic_scrub_for_table(&t);
+        // delay_automatic_scrub_for_table(&t);
     }
 }
 
