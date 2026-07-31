@@ -20,8 +20,14 @@
 #include "test/lib/test_utils.hh"
 #include "test/lib/random_utils.hh"
 
-enum class random_schema { no, yes };
-template <random_schema create_random_schema>
+future<> foreach_compaction_group_view_with_thread(table_for_tests& table, std::function<void(compaction::compaction_group_view&)> action) {
+    return table->parallel_foreach_compaction_group_view([action] (compaction::compaction_group_view& ts) {
+        return seastar::async([action, &ts] {
+            action(ts);
+        });
+    });
+}
+
 class scrub_test_framework {
 public:
     using test_func = std::function<void(table_for_tests&, compaction::compaction_group_view&, std::vector<sstables::shared_sstable>)>;
@@ -57,36 +63,33 @@ public:
     tests::random_schema& random_schema() { return _random_schema; }
     schema_ptr schema() const { return _random_schema.schema(); }
 
-    void run(schema_ptr schema, std::deque<mutation_fragment_v2> frags, test_func func) {
-        auto& env = this->env();
+    shared_sstable make_sstable() {
+        auto muts = tests::generate_random_mutations(
+                random_schema(),
+                tests::uncompactible_timestamp_generator(seed()),
+                tests::no_expiry_expiry_generator(),
+                std::uniform_int_distribution<size_t>(10, 10)).get();
 
-        const auto partition_count = std::count_if(frags.begin(), frags.end(), std::mem_fn(&mutation_fragment_v2::is_partition_start));
+        
+        return make_sstable_containing(env().make_sstable(schema()), muts).get();
+    }
 
-        auto permit = env.make_reader_permit();
-        auto mr = make_mutation_reader_from_fragments(schema, permit, clone(*schema, permit, frags));
-
-        auto close_mr = deferred_close(mr);
-
-        // The test violates key order on purpose.
-        // That's illegal with the index writer of version `ms`.
-        // So we can't use this test, as it is currently written, with `ms`.
-        auto version = sstable_version_types::me;
-        auto sst = env.make_sstable(schema, version);
-        sstable_writer_config cfg = env.manager().configure_writer();
-        cfg.validation_level = mutation_fragment_stream_validation_level::partition_region; // this test violates key order on purpose
-
-        auto wr = sst->get_writer(*schema, partition_count, cfg, encoding_stats{});
-        mr.consume_in_thread(std::move(wr));
-
-        sst->load(schema->get_sharder()).get();
-
-        auto table = env.make_table_for_tests(schema);
-        auto close_cf = deferred_stop(table);
+    table_for_tests make_table() {
+        auto table = env().make_table_for_tests(schema());
         table->start();
 
-        table->add_sstable_and_update_cache(sst).get();
+        for (size_t i = 0; i < 5; i++) {
+            auto sst = make_sstable();
+            sst->load(random_schema().schema()->get_sharder()).get();
+            table->add_sstable_and_update_cache(sst).get();
+        }
 
-        verify_fragments({sst}, env.make_reader_permit(), frags);
+        return table;
+    }
+
+    void run(test_func func) {
+        auto table = make_table();
+        auto close_cf = deferred_stop(table);
 
         bool found_sstable = false;
         foreach_compaction_group_view_with_thread(table, [&] (compaction::compaction_group_view& ts) {
@@ -94,33 +97,39 @@ public:
             if (sstables.empty()) {
                 return;
             }
-            BOOST_REQUIRE(sstables.size() == 1);
-            BOOST_REQUIRE(sstables.front() == sst);
             found_sstable = true;
 
             func(table, ts, sstables);
         }).get();
         BOOST_REQUIRE(found_sstable);
     }
-
-    void run(schema_ptr schema, utils::chunked_vector<mutation> muts, test_func func) {
-        run(std::move(schema), explode(env().make_reader_permit(), std::move(muts)), std::move(func));
-    }
 };
 
-static future<> do_test_automatic_scrub(cql_test_env& env) {
-    // env.
-    co_return;
+future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
+    while (cm.get_stats().pending_tasks != 0 || cm.get_stats().completed_tasks == 0) {
+        co_await sleep(std::chrono::milliseconds(100));
+    }
 }
 
-static future<> test_automatic_scrub() {
-    return do_with_cql_env(do_test_automatic_scrub);
-}
+void auto_scrub_validate_corrupted_content() {
+    scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
-SEASTAR_TEST_CASE(test_automatic_scrub_works) {
-    return test_automatic_scrub();
-}
+    auto& test_env = test.env();
 
-// Test scrub timestamp update
-// 
-// Test automatic scrub -> trigger & compare_sstables
+    test.run([&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+
+        BOOST_REQUIRE(sstables.size() == 1);
+        auto sst = sstables.front();
+
+        // corrupt_sstable(sst);
+
+        // cm.trigger_auto_scrub_timer();
+
+        cm_ended_some_work(cm.get_compaction_manager()).wait();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
+    });
+    
+}
