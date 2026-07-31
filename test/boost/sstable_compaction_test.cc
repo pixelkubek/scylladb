@@ -2922,6 +2922,47 @@ public:
     }
 };
 
+future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
+    while (cm.get_stats().pending_tasks != 0 || cm.get_stats().completed_tasks == 0) {
+        co_await sleep(std::chrono::milliseconds(100));
+    }
+}
+
+void auto_scrub_validate_corrupted_content() {
+    scrub_test_framework<random_schema::yes> test(compress_sstable::yes);
+
+    auto muts = tests::generate_random_mutations(
+            test.random_schema(),
+            tests::uncompactible_timestamp_generator(test.seed()),
+            tests::no_expiry_expiry_generator(),
+            std::uniform_int_distribution<size_t>(10, 10)).get();
+    
+    auto schema = test.schema();
+    auto& test_env = test.env();
+
+    test.run(schema, muts, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+
+        BOOST_REQUIRE(sstables.size() == 1);
+        auto sst = sstables.front();
+
+        corrupt_sstable(sst);
+
+        // cm.trigger_auto_scrub_timer();
+
+        cm_ended_some_work(cm.get_compaction_manager()).wait();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
+    });
+    
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_content) {
+    auto_scrub_validate_corrupted_content();
+}
+
+
 void scrub_validate_corrupted_content(compress_sstable compress) {
     scrub_test_framework<random_schema::yes> test(compress);
 

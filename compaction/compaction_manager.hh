@@ -84,7 +84,7 @@ public:
         utils::updateable_value<float> max_shares = utils::updateable_value<float>(0);
         utils::updateable_value<uint32_t> throughput_mb_per_sec = utils::updateable_value<uint32_t>(0);
         std::chrono::seconds flush_all_tables_before_major = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::days(1));
-        utils::updateable_value<std::chrono::seconds> scrub_period;
+        utils::updateable_value<std::optional<std::chrono::seconds>> scrub_period;
     };
 
 public:
@@ -154,6 +154,8 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
+    void update_automatic_scrub_submission_timer();
+    
     std::function<void()> automatic_scrub_submission_callback();
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
@@ -162,7 +164,7 @@ private:
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
 
-    std::optional<utils::observer<std::chrono::seconds>> _scrub_period_observer;
+    std::optional<utils::observer<std::optional<std::chrono::seconds>>> _scrub_period_observer;
     timer<lowres_clock> _automatic_scrub_submission_timer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;

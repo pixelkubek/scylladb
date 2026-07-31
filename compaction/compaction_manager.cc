@@ -1140,6 +1140,16 @@ void compaction_manager::register_metrics() {
     });
 }
 
+void compaction_manager::update_automatic_scrub_submission_timer() {
+    auto scrub_period = _cfg.scrub_period.get();
+
+    if (scrub_period) {
+        _automatic_scrub_submission_timer.rearm_periodic(*scrub_period);
+    } else {
+        _automatic_scrub_submission_timer.cancel();
+    }
+}
+
 void compaction_manager::enable() {
     SCYLLA_ASSERT(_state == state::none || _state == state::running);
     cmlog.info("Asked to enable");
@@ -1155,9 +1165,9 @@ void compaction_manager::enable() {
     _compaction_submission_timer.cancel();
     _compaction_submission_timer.arm_periodic(periodic_compaction_submission_interval());
     _automatic_scrub_submission_timer.cancel();
-    _automatic_scrub_submission_timer.arm_periodic(_cfg.scrub_period.get());
+    update_automatic_scrub_submission_timer();
     _scrub_period_observer = _cfg.scrub_period.observe([this] (const auto& period) {
-        _automatic_scrub_submission_timer.arm_periodic(period);
+        update_automatic_scrub_submission_timer();
     });
     throwing_assert(!_waiting_reevaluation);
     _waiting_reevaluation.emplace(postponed_compactions_reevaluation());
@@ -1179,6 +1189,7 @@ std::function<void()> compaction_manager::compaction_submission_callback() {
 }
 
 std::function<void()> compaction_manager::automatic_scrub_submission_callback() {
+    cmlog.warn("Automatic scrub callback");
     return [this] mutable {
         for (auto& [table, state] : _compaction_state) {
             delay_automatic_scrub_for_table(table);
@@ -1207,6 +1218,7 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
                }
                cmlog.debug("resubmitting automatic scrub for table {} [{}]", *t, fmt::ptr(t));
                co_await submit_automatic_scrub(*t);
+               co_await coroutine::maybe_yield();
            }
        } catch (...) {
            _awaiting_automatic_scrub.insert(awaiting.begin(), awaiting.end());
@@ -1279,9 +1291,14 @@ void compaction_manager::delay_automatic_scrub_for_table(compaction_group_view* 
 }
 
 bool compaction_manager::should_be_automatically_scrubbed(const sstables::shared_sstable& sst) const {
-    auto scrub_period = _cfg.scrub_period.get();    
+    auto scrub_period = _cfg.scrub_period.get();
+
+    if (!scrub_period) {
+        return false;
+    }
+    
     auto now = db_clock::now();
-    auto scrub_older_than = now - scrub_period;
+    auto scrub_older_than = now - *scrub_period;
 
     if (!sst->has_scylla_component()) {
         // We don't know when it was last validated.
