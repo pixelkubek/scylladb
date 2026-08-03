@@ -77,19 +77,15 @@ public:
                 tests::no_expiry_expiry_generator(),
                 std::uniform_int_distribution<size_t>(10, 10)).get();
         
-        // auto sst = make_sstable(schema(), explode(env().make_reader_permit(), std::move(muts)));
-
         auto sst = make_sstable_containing(env().make_sstable(schema()), std::move(muts)).get();
-
-        
         return sst;
     }
 
-    table_for_tests make_table() {
+    table_for_tests make_table(size_t sst_count) {
         auto table = env().make_table_for_tests(schema());
         table->start();
 
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; i < sst_count; i++) {
             auto sst = make_sstable();
             table->add_sstable_and_update_cache(sst, offstrategy::yes).get();
         }
@@ -97,8 +93,8 @@ public:
         return table;
     }
 
-    void run(test_func func) {
-        auto table = make_table();
+    void run(size_t sst_count, test_func func) {
+        auto table = make_table(sst_count);
         auto close_cf = deferred_stop(table);
 
         auto& cgv = table.as_compaction_group_view();
@@ -131,15 +127,14 @@ static void corrupt_sstable(sstables::shared_sstable sst, component_type type = 
 }
 
 
-void auto_scrub_validate_corrupted_content() {
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_ssts_with_scylla) {
     scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
 
-    test.run([&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
-        BOOST_REQUIRE_GE(sstables.size(), 1);
         for (sstables::shared_sstable& sst : sstables) {
             sst->set_automatic_scrub_timestamp(db_clock::from_time_t(0));
             corrupt_sstable(sst);
@@ -151,11 +146,11 @@ void auto_scrub_validate_corrupted_content() {
         wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
-        BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
+        for (auto& sst : *table->get_sstables()) {
+            BOOST_REQUIRE(sst->is_quarantined());
+        }
     });
 }
-}
 
-SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_content) {
-    auto_scrub_validate_corrupted_content();
-}
+} // namespace
+
