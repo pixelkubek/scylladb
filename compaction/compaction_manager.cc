@@ -3012,13 +3012,17 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     };
 
     if (!registered) {
+        // TODO Remove from awaiting auto scrub
         co_return;
     }
     
     _automatic_scrub_task = do_automatic_scrub(t, *std::move(registered), tasks::task_info{}, std::move(registration))
     .then([this] (compaction_manager::compaction_stats_opt) -> future<> {
-       co_return;
+        utils::get_local_injector().enter("automatic_scrub_compaction_done");
+        // TODO retrigger auto scrub (uwaga, co jak zanim wróci na conditional)
        (void)this;
+       
+        co_return;
     });
 }
 
