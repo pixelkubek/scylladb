@@ -309,6 +309,8 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_validated_sstables_test) {
             }
         }
 
+        sstables::test(not_validated.front()).rewrite_toc_without_component(component_type::Scylla);
+
         auto generations_of_validated = validated
             | std::views::transform(std::mem_fn(&sstable::generation))
             | std::ranges::to<std::unordered_set>();
