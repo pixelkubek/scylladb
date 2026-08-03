@@ -1061,10 +1061,10 @@ public:
 
 compaction_manager::compaction_manager(config cfg, abort_source& as, tasks::task_manager& tm)
     : _task_manager_module(make_shared<task_manager_module>(tm))
+    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(std::move(cfg))
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
-    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), static_shares(), _cfg.max_shares.get(), [this] () -> float {
         _last_backlog = backlog();
         auto b = _last_backlog / available_memory();
@@ -1095,10 +1095,10 @@ compaction_manager::compaction_manager(config cfg, abort_source& as, tasks::task
 
 compaction_manager::compaction_manager(tasks::task_manager& tm)
     : _task_manager_module(make_shared<task_manager_module>(tm))
+    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(config{ .available_memory = 1 })
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
-    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
     , _compaction_controller(make_compaction_controller(compaction_sg(), 1, std::nullopt, [] () -> float { return 1.0; }))
     , _backlog_manager(_compaction_controller)
     , _update_compaction_static_shares_action([] { return make_ready_future<>(); })
@@ -1192,7 +1192,7 @@ std::function<void()> compaction_manager::automatic_scrub_submission_callback() 
     cmlog.warn("Automatic scrub callback");
     return [this] mutable {
         for (auto& [table, state] : _compaction_state) {
-            delay_automatic_scrub_for_table(table);
+            schedule_table_for_automatic_scrub(table);
         }
         reevaluate_automatic_scrub();
     };
@@ -1209,9 +1209,18 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
         if (is_disabled()) {
             co_return;
         }
+
+        if (_awaiting_automatic_scrub.empty()) {
+            continue;
+        }
         
        try {
-           co_await submit_automatic_scrub();
+           // Schedule automatic scrub for an arbitraty compaction group view.
+           // Auto scrub will validate up to one sstable.
+           // If there were none eligible sstables, it will remove the view
+           // from the set. Otherwise, it will reschedule reevaluation.
+           auto t = *_awaiting_automatic_scrub.begin();
+           co_await submit_automatic_scrub(*t);
        } catch (...) {
            cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
        }
@@ -1286,7 +1295,7 @@ void compaction_manager::postpone_compaction_for_table(compaction_group_view* t)
     _postponed.insert(t);
 }
 
-void compaction_manager::delay_automatic_scrub_for_table(compaction_group_view* t) {
+void compaction_manager::schedule_table_for_automatic_scrub(compaction_group_view* t) {
     _awaiting_automatic_scrub.insert(t);
 }
 
@@ -2924,36 +2933,6 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
     return t.get_backlog_tracker();
 }
 
-
-
-
-static future<std::optional<sstables::shared_sstable>> register_automatic_scrub_sstable(
-    compaction_group_view& t,
-    compacting_sstable_registration& registration,
-    std::function<bool(const sstables::shared_sstable&)> filter,
-    std::span<const sstables::shared_sstable> hint = {}
-) 
-{
-    for (const auto& sst : hint) {
-        if (filter(sst)) {
-            registration.register_compacting({sst});
-            co_return sst;
-        }
-    }
-    
-    auto all_sstables = co_await get_all_sstables(t);
-    cmlog.warn("Considering stables for {}: {}", t, all_sstables);
-    
-    for (const auto& sst : all_sstables) {
-        if (filter(sst)) {
-            registration.register_compacting({sst});
-            co_return sst;
-        }
-    }
-
-    co_return std::nullopt;
-}
-
 future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     cmlog.warn("submit_automatic_scrub");
 
@@ -2963,16 +2942,27 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     }
 
     compacting_sstable_registration registration(*this, get_compaction_state(&t));
-
-    auto filter = [this] (const sstables::shared_sstable& sst) {
-        return should_be_automatically_scrubbed(sst) && eligible_for_compaction(sst);
-    };
+    std::optional<sstables::shared_sstable> registered;
+    bool all_sstables_validated = true;
     
-    auto registered = co_await seastar::with_semaphore(
+    co_await seastar::with_semaphore(
         get_compaction_state(&t).sstable_set_lock, 
         1, 
-        [&t, &registration, filter = std::move(filter)] {
-            return register_automatic_scrub_sstable(t, registration, std::move(filter));
+        [this, &t, &registration, &registered, &all_sstables_validated] -> future<> {
+            auto all_sstables = co_await get_all_sstables(t);
+            cmlog.warn("Considering stables for {}: {}", t, all_sstables);
+            
+            for (auto& sst : all_sstables) {
+                if (!eligible_for_compaction(sst)) {
+                    all_sstables_validated = false;
+                    continue;
+                }
+
+                if (!registered && should_be_automatically_scrubbed(sst)) {
+                    registration.register_compacting({sst});
+                    registered  = std::move(sst);
+                }
+            }
         }
     );
 
@@ -3011,8 +3001,8 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         }
     };
 
-    if (!registered) {
-        // TODO Remove from awaiting auto scrub
+    if (all_sstables_validated) {
+        _awaiting_automatic_scrub.erase(&t);
         co_return;
     }
     

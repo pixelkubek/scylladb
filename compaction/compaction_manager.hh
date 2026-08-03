@@ -130,16 +130,24 @@ private:
     std::unordered_set<sstables::shared_sstable> _compacting_sstables;
 
     std::optional<future<>> _waiting_reevaluation;
-    std::optional<future<>> _waiting_automatic_scrub_reevaluation;
     condition_variable _postponed_reevaluation;
-    condition_variable _automatic_scrub_reevaluation;
     // tables that wait for compaction but had its submission postponed due to ongoing compaction.
     std::unordered_set<compaction::compaction_group_view*> _postponed;
-    std::optional<future<>> _automatic_scrub_task;
     // tracks taken weights of ongoing compactions, only one compaction per weight is allowed.
     // weight is value assigned to a compaction job that is log base N of total size of all input sstables.
     std::unordered_set<int> _weight_tracker;
 
+    // Fiber which waits for a signal and reevaluates automatic scrub.
+    std::optional<future<>> _waiting_automatic_scrub_reevaluation;
+    condition_variable _automatic_scrub_reevaluation;
+    
+    // Compaction groups views which should be considered for automatic scrub.
+    std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
+    std::optional<future<>> _automatic_scrub_task;
+
+    timer<lowres_clock> _automatic_scrub_submission_timer;
+
+    
     std::unordered_map<compaction::compaction_group_view*, compaction_state> _compaction_state;
 
     // Purpose is to serialize all maintenance (non regular) compaction activity to reduce aggressiveness and space requirement.
@@ -154,9 +162,15 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
-    void update_automatic_scrub_submission_timer();
     
+    void update_automatic_scrub_submission_timer();
     std::function<void()> automatic_scrub_submission_callback();
+    future<> automatic_scrub_reevaluation();
+    void reevaluate_automatic_scrub() noexcept;
+    future<> stop_automatic_scrub() noexcept;
+    void schedule_table_for_automatic_scrub(compaction::compaction_group_view* t);
+    bool should_be_automatically_scrubbed(const sstables::shared_sstable&) const;
+    
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
     static constexpr std::chrono::seconds periodic_compaction_submission_interval() { return std::chrono::seconds(3600); }
@@ -165,7 +179,6 @@ private:
     timer<lowres_clock> _compaction_submission_timer;
 
     std::optional<utils::observer<std::optional<std::chrono::seconds>>> _scrub_period_observer;
-    timer<lowres_clock> _automatic_scrub_submission_timer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;
     optimized_optional<abort_source::subscription> _early_abort_subscription;
@@ -239,20 +252,15 @@ private:
     // table still exists and compaction is not disabled for the table.
     inline bool can_proceed(compaction::compaction_group_view* t) const;
 
-    future<> automatic_scrub_reevaluation();
 
     
     future<> postponed_compactions_reevaluation();
     void reevaluate_postponed_compactions() noexcept;
-    void reevaluate_automatic_scrub() noexcept;
     future<> stop_postponed_compactions() noexcept;
-    future<> stop_automatic_scrub() noexcept;
     // Postpone compaction for a table that couldn't be executed due to ongoing
     // similar-sized compaction.
     void postpone_compaction_for_table(compaction::compaction_group_view* t);
-    void delay_automatic_scrub_for_table(compaction::compaction_group_view* t);
 
-    bool should_be_automatically_scrubbed(const sstables::shared_sstable&) const;
 
     using quarantine_invalid_sstables = compaction_type_options::scrub::quarantine_invalid_sstables;
     using may_update_scrub_time = compaction_type_options::scrub::may_update_scrub_time;
