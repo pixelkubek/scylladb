@@ -279,7 +279,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_mixed) {
         auto timestamp_before = db_clock::now();
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validate_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
         wait_on_enter("automatic_scrub_rewrite_iteration_finished").wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
@@ -287,6 +287,56 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_mixed) {
             BOOST_REQUIRE(sst->has_scylla_component());
             BOOST_REQUIRE(sst->get_automatic_scrub_timestamp() > timestamp_before);
         }
+    });
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_validated_sstables_test) {
+    automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+
+    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+
+        std::vector<shared_sstable> validated, not_validated;
+
+        for (auto [idx, sst] : std::views::enumerate(sstables)) {
+            if (idx < 3) {
+                sst->set_automatic_scrub_timestamp(db_clock::from_time_t(0));
+                not_validated.emplace_back(std::move(sst));
+            } else {
+                validated.emplace_back(std::move(sst));
+            }
+        }
+
+        auto generations_of_validated = validated
+            | std::views::transform(std::mem_fn(&sstable::generation))
+            | std::ranges::to<std::unordered_set>();
+        
+        auto timestamp_before = db_clock::now();
+
+        cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
+        cm.trigger_auto_scrub_timer();
+
+        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+
+        auto sstables_after = table->get_sstables();
+        size_t newly_validated = 0;
+
+        for (const auto& sst : *sstables_after) {
+            BOOST_REQUIRE(sst->get_automatic_scrub_timestamp());
+            if (*sst->get_automatic_scrub_timestamp() > timestamp_before) {
+                newly_validated++;
+            } else {
+                auto it = generations_of_validated.find(sst->generation());
+                BOOST_REQUIRE(it != generations_of_validated.end());
+                generations_of_validated.erase(it);
+            }
+        }
+        
+        BOOST_REQUIRE_EQUAL(newly_validated, not_validated.size());
     });
 }
 
