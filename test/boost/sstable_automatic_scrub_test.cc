@@ -114,6 +114,16 @@ future<> wait_on_enter(std::string_view name, size_t count = 1) {
     }
 }
 
+void compare_non_scylla_digests(const sstables::scylla_metadata::components_digests& lhs, const sstables::scylla_metadata::components_digests& rhs) {
+    BOOST_REQUIRE_EQUAL(lhs.map.size(), rhs.map.size());
+
+    for (const auto& [component, digest] : lhs.map) {
+        auto it = rhs.map.find(component);
+        BOOST_REQUIRE(it != rhs.map.end());
+        BOOST_REQUIRE_EQUAL(digest, it->second);
+    }
+}
+
 static void corrupt_sstable(sstables::shared_sstable sst, component_type type = component_type::Data) {
     auto f = sstables::test(sst).open_file(type, {}, {}).get();
     auto close_f = deferred_close(f);
@@ -149,6 +159,45 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_ssts_with_scylla) {
         for (auto& sst : *table->get_sstables()) {
             BOOST_REQUIRE(sst->is_quarantined());
         }
+    });
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_only_scylla_rewritten) {
+    scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+
+    test.run(1, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+
+        BOOST_REQUIRE_EQUAL(sstables.size(), 1);
+        auto& sst = sstables.front();
+        
+        sst->set_automatic_scrub_timestamp(db_clock::from_time_t(0));
+
+        BOOST_REQUIRE(sst->get_scylla_metadata());
+        auto pre_scrub_digests = sst->get_scylla_metadata()->get_components_digests();
+        BOOST_REQUIRE(pre_scrub_digests);
+        auto pre_scrub = *pre_scrub_digests;
+
+        // Enable auto scrub.
+        cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
+
+        cm.trigger_auto_scrub_timer();
+
+        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+        auto new_sst = *table->get_sstables()->begin();
+
+        BOOST_REQUIRE(new_sst->get_scylla_metadata());
+        auto post_scrub_digests = new_sst->get_scylla_metadata()->get_components_digests();
+        BOOST_REQUIRE(post_scrub_digests);
+
+        // Component digest are the same and the new sst components match the digests.
+        compare_non_scylla_digests(pre_scrub, *post_scrub_digests);
+        auto validation_result = sstables::validate_checksums_and_digests(new_sst, test_env.make_reader_permit()).get();
+        BOOST_REQUIRE(validation_result.status == sstables::validate_checksums_status::valid);
     });
 }
 
