@@ -2926,93 +2926,39 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
 
 
 
-struct automatic_scrub_submission_sstables {
-    std::vector<sstables::shared_sstable> to_validate;    
-    std::vector<sstables::shared_sstable> to_rewrite;    
-    bool all_included;
-};
-static future<automatic_scrub_submission_sstables> register_automatic_scrub_sstables(
+
+static future<std::optional<sstables::shared_sstable>> register_automatic_scrub_sstable(
     compaction_group_view& t,
-    compacting_sstable_registration& validating,
-    compacting_sstable_registration& scrubbing,
-    std::function<bool(const sstables::shared_sstable&)> filter
+    compacting_sstable_registration& registration,
+    std::function<bool(const sstables::shared_sstable&)> filter,
+    std::span<const sstables::shared_sstable> hint = {}
 ) 
 {
-    std::vector<sstables::shared_sstable> sstables_to_scrub, sstables_to_rewrite;
-
-    bool all_included = false;
+    for (const auto& sst : hint) {
+        if (filter(sst)) {
+            registration.register_compacting({sst});
+            co_return sst;
+        }
+    }
     
-    // Only include sstables which are not part of a compaction.
-    // After a compaction finishes, it will reevaluate whether
-    // auto scrub is needed.
     auto all_sstables = co_await get_all_sstables(t);
     cmlog.warn("Considering stables for {}: {}", t, all_sstables);
     
-    auto eligible_for_auto_scrub = all_sstables 
-        | std::views::filter(std::move(filter))
-        | std::ranges::to<std::vector>();
-
-    if (all_sstables.size() == eligible_for_auto_scrub.size()) {
-        // Porównuje złe rzeczy. SStabelki które są już scrubed nie muszą być
-        all_included = true;
-    }
-
-    for (const auto& sst : eligible_for_auto_scrub) {
-        if (sst->has_scylla_component()) {
-            sstables_to_scrub.emplace_back(sst);
-        } else {
-            sstables_to_rewrite.emplace_back(sst);
+    for (const auto& sst : all_sstables) {
+        if (filter(sst)) {
+            registration.register_compacting({sst});
+            co_return sst;
         }
     }
-    
-    validating.register_compacting(sstables_to_scrub);
-    scrubbing.register_compacting(sstables_to_rewrite);
 
-    co_return automatic_scrub_submission_sstables {
-        .to_validate = std::move(sstables_to_scrub),
-        .to_rewrite = std::move(sstables_to_rewrite),
-        .all_included = all_included,
-    };
-}
-
-std::optional<sstables::shared_sstable> do_select_auto_scrub_candidate(compaction_group_view& cg, const std::span<sstables::shared_sstable> sstables, std::function<bool(const sstables::shared_sstable&)> selector) {
-    for (auto& sst : sstables) {
-        if (selector(sst)) {
-            return sst;
-        }
-    }
-    return std::nullopt;
-}
-
-future<std::optional<compaction_manager::automatic_scrub_candidate>> compaction_manager::select_auto_scrub_candidate() {
-    for (auto& [table, state] : _compaction_state) {
-        auto all_sstables = co_await get_all_sstables(*table);
-        for (const auto& sst : all_sstables) {
-            if (should_be_automatically_scrubbed(sst) && eligible_for_compaction(sst)) {
-                co_return compaction_manager::automatic_scrub_candidate {
-                    table,
-                    std::move(sst),
-                };
-            }
-        }
-    }
     co_return std::nullopt;
-}
-future<std::optional<compaction_manager::automatic_scrub_candidate>> compaction_manager::select_auto_scrub_candidate(compaction_group_view&) {
-    return select_auto_scrub_candidate();
-    // TODO use hint
-}
-future<std::optional<compaction_manager::automatic_scrub_candidate>> compaction_manager::select_auto_scrub_candidate(compaction_group_view&, std::vector<sstables::shared_sstable>) {
-    return select_auto_scrub_candidate();
-    // TODO use hint
 }
 
 future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     cmlog.warn("submit_automatic_scrub");
 
-    auto validate_gh = start_compaction(t);
-    auto rewrite_gh = start_compaction(t);
-    if (!validate_gh || !rewrite_gh) {
+    auto gh = start_compaction(t);
+    if (!gh) {
         co_return;
     }
 
@@ -3025,62 +2971,55 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     auto registered = co_await seastar::with_semaphore(
         get_compaction_state(&t).sstable_set_lock, 
         1, 
-        [&t, &registration, &scrubbing, filter = std::move(filter)] {
-            return register_automatic_scrub_sstables(t, validating, scrubbing, std::move(filter));
+        [&t, &registration, filter = std::move(filter)] {
+            return register_automatic_scrub_sstable(t, registration, std::move(filter));
         }
     );
 
-    cmlog.warn("To validate for {}: {}", t, registered.to_validate);
-    if (!registered.to_validate.empty()) {
-        tasks::task_info info{};
-        cmlog.info("Performing automatic validation for sstables {}", registered.to_validate);
-        
-        // Future waited via compaction_task_executor::compaction_done()
-        (void)perform_compaction<validate_sstables_compaction_task_executor>(
-            throw_if_stopping::no, 
-            info, 
-            &t, 
-            info.id, 
-            std::move(registered.to_validate), 
-            std::move(registration),
-            compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes)
-        .then_wrapped([gh = std::move(validate_gh)] (auto f) { 
-            f.ignore_ready_future();
-            utils::get_local_injector().enter("automatic_scrub_validation_iteration_finished");
-        });
-    }
 
-    cmlog.warn("To validate for {}: {}", t, registered.to_rewrite);
-    if (!registered.to_rewrite.empty()) {
-        tasks::task_info info{};
-        owned_ranges_ptr owned_ranges_ptr{};
-        sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
-        auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
-        
-        (void)perform_compaction<rewrite_sstables_compaction_task_executor>(
-            throw_if_stopping::no, 
-            info, 
-            &t, 
-            info.id, 
-            std::move(scrub_abort), 
-            std::move(owned_ranges_ptr), 
-            std::move(registered.to_rewrite), 
-            std::move(scrubbing), 
-            can_purge_tombstones::no, 
-            std::move(option_desc)
-        ).then_wrapped([gh = std::move(rewrite_gh)] (auto f) {
-            f.ignore_ready_future();
-            utils::get_local_injector().enter("automatic_scrub_rewrite_iteration_finished");
-        });
-    }
+    auto do_automatic_scrub = [this, gh = std::move(gh)] (compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration) -> future<compaction_manager::compaction_stats_opt> {
+        if (sst->has_scylla_component()) {
+            cmlog.info("Performing automatic validation for sstable {}", sst);
+            
+            return perform_compaction<validate_sstables_compaction_task_executor>(
+                throw_if_stopping::no, 
+                info, 
+                &t, 
+                info.id, 
+                std::vector{sst}, 
+                std::move(registration),
+                compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
+            );
+        } else {
+            owned_ranges_ptr owned_ranges_ptr{};
+            sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
+            auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
+    
+            // TODO change to upgrade
+            return perform_compaction<rewrite_sstables_compaction_task_executor>(
+                throw_if_stopping::no, 
+                info, 
+                &t, 
+                info.id, 
+                std::move(scrub_abort), 
+                std::move(owned_ranges_ptr), 
+                std::vector{sst}, 
+                std::move(registration), 
+                can_purge_tombstones::no, 
+                std::move(option_desc)
+            );
+        }
+    };
 
-
-    if (!registered.all_included) {
-        // If not all sstables which should be validated were included,
-        // schedule this group view for another automatic scrub.
-        // It will be reevaluated once some compaction finishes.
-        delay_automatic_scrub_for_table(&t);
+    if (!registered) {
+        co_return;
     }
+    
+    _automatic_scrub_task = do_automatic_scrub(t, *std::move(registered), tasks::task_info{}, std::move(registration))
+    .then([this] (compaction_manager::compaction_stats_opt) -> future<> {
+       co_return;
+       (void)this;
+    });
 }
 
 }

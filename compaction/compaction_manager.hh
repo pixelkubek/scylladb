@@ -389,15 +389,6 @@ private:
     future<> on_compaction_completion(compaction_group_view& t, compaction_completion_desc desc, sstables::offstrategy offstrategy);
 
     future<> submit_automatic_scrub(compaction_group_view& t);
-
-    struct automatic_scrub_candidate {
-        compaction_group_view* cg;
-        sstables::shared_sstable sst;
-    };
-    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate();
-    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate(compaction_group_view& cg_hint);
-    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate(compaction_group_view& cg_hint, std::vector<sstables::shared_sstable> sst_hint);
-    
 public:
     // Submit a table to be upgraded and wait for its termination.
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, bool exclude_current_version, tasks::task_info info);
