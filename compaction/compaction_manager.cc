@@ -3021,7 +3021,10 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
             std::move(registered.to_validate), 
             std::move(validating),
             compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes)
-        .then_wrapped([gh = std::move(validate_gh)] (auto f) { f.ignore_ready_future(); });        
+        .then_wrapped([gh = std::move(validate_gh)] (auto f) { 
+            f.ignore_ready_future();
+            utils::get_local_injector().enter("automatic_scrub_validation_iteration_finished");
+        });
     }
 
     cmlog.warn("To validate for {}: {}", t, registered.to_rewrite);
@@ -3042,7 +3045,10 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
             std::move(scrubbing), 
             can_purge_tombstones::no, 
             std::move(option_desc)
-        ).then_wrapped([gh = std::move(rewrite_gh)] (auto f) { f.ignore_ready_future(); });
+        ).then_wrapped([gh = std::move(rewrite_gh)] (auto f) {
+            f.ignore_ready_future();
+            utils::get_local_injector().enter("automatic_scrub_rewrite_iteration_finished");
+        });
     }
 
 
@@ -3050,7 +3056,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         // If not all sstables which should be validated were included,
         // schedule this group view for another automatic scrub.
         // It will be reevaluated once some compaction finishes.
-        // delay_automatic_scrub_for_table(&t);
+        delay_automatic_scrub_for_table(&t);
     }
 }
 

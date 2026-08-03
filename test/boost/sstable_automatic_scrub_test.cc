@@ -15,6 +15,7 @@
 #include "sstables/sstable_writer.hh"
 #include "test/boost/sstable_test.hh"
 #include "test/lib/cql_test_env.hh"
+#include "test/lib/error_injection.hh"
 #include "test/lib/mutation_source_test.hh"
 #include "test/lib/random_schema.hh"
 #include "test/lib/simple_schema.hh"
@@ -102,27 +103,17 @@ public:
 
         auto& cgv = table.as_compaction_group_view();
 
-        // env().test_compaction_manager().set_scrub_period() !!!
+        scoped_no_abort_on_malformed_sstable_error no_abort{};
+        scoped_error_injection validation_injection{"automatic_scrub_validation_iteration_finished"};
+        scoped_error_injection rewrite_injection{"automatic_scrub_rewrite_iteration_finished"};
         
         func(table, cgv, get_all_sstables(cgv).get());
-        
-        // bool found_sstable = false;        
-        // foreach_compaction_group_view_with_thread(table, [&] (compaction::compaction_group_view& ts) {
-        //     auto sstables = get_all_sstables(ts).get();
-        //     if (sstables.empty()) {
-        //         return;
-        //     }
-        //     found_sstable = true;
-
-        //     func(table, ts, sstables);
-        // }).get();
-        // BOOST_REQUIRE(found_sstable);
-        // env().test_compaction_manager().get_compaction_manager().stop().get();
     }
 };
 
-future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
-    while (cm.get_stats().pending_tasks != 0 || cm.get_stats().completed_tasks == 0) {
+future<> wait_on_enter(std::string_view name, size_t count = 1) {
+    auto& injector = utils::get_local_injector();
+    while (injector.enter_count(name) < count) {
         co_await sleep(std::chrono::milliseconds(100));
     }
 }
@@ -155,12 +146,9 @@ void auto_scrub_validate_corrupted_content() {
         }
 
         cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
-
         cm.trigger_auto_scrub_timer();
 
-        // sleep(std::chrono::seconds(5)).wait();
-
-        cm_ended_some_work(cm.get_compaction_manager()).wait();
+        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
