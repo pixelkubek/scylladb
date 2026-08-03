@@ -135,7 +135,7 @@ private:
     condition_variable _automatic_scrub_reevaluation;
     // tables that wait for compaction but had its submission postponed due to ongoing compaction.
     std::unordered_set<compaction::compaction_group_view*> _postponed;
-    std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
+    std::optional<future<>> _automatic_scrub_task;
     // tracks taken weights of ongoing compactions, only one compaction per weight is allowed.
     // weight is value assigned to a compaction job that is log base N of total size of all input sstables.
     std::unordered_set<int> _weight_tracker;
@@ -358,8 +358,6 @@ public:
     // Submit a table to be compacted.
     void submit(compaction::compaction_group_view& t);
 
-    future<> submit_automatic_scrub(compaction::compaction_group_view& t);
-
     // Can regular compaction be performed in the given table
     bool can_perform_regular_compaction(compaction::compaction_group_view& t);
 
@@ -389,6 +387,17 @@ private:
     bool update_sstable_cleanup_state(compaction_group_view& t, const sstables::shared_sstable& sst, const dht::token_range_vector& sorted_owned_ranges);
 
     future<> on_compaction_completion(compaction_group_view& t, compaction_completion_desc desc, sstables::offstrategy offstrategy);
+
+    future<> submit_automatic_scrub(compaction_group_view& t);
+
+    struct automatic_scrub_candidate {
+        compaction_group_view* cg;
+        sstables::shared_sstable sst;
+    };
+    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate();
+    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate(compaction_group_view& cg_hint);
+    future<std::optional<automatic_scrub_candidate>> select_auto_scrub_candidate(compaction_group_view& cg_hint, std::vector<sstables::shared_sstable> sst_hint);
+    
 public:
     // Submit a table to be upgraded and wait for its termination.
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, bool exclude_current_version, tasks::task_info info);
