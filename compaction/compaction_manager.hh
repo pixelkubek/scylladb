@@ -240,6 +240,8 @@ private:
     inline bool can_proceed(compaction::compaction_group_view* t) const;
 
     future<> automatic_scrub_reevaluation();
+
+    
     future<> postponed_compactions_reevaluation();
     void reevaluate_postponed_compactions() noexcept;
     void reevaluate_automatic_scrub() noexcept;
@@ -377,6 +379,9 @@ public:
     // given sstable, e.g. after node loses part of its token range because
     // of a newly added node.
     future<> perform_cleanup(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, tasks::task_info info);
+
+    void set_scrub_period(std::chrono::seconds period);
+    void remove_scrub_period();
 private:
     future<> try_perform_cleanup(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, tasks::task_info info);
 

@@ -1226,6 +1226,14 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
    }
 }
 
+void compaction_manager::set_scrub_period(std::chrono::seconds period) {
+    _cfg.scrub_period = period;
+}
+
+void compaction_manager::remove_scrub_period() {
+    _cfg.scrub_period = std::nullopt;
+}
+
 future<> compaction_manager::postponed_compactions_reevaluation() {
      while (true) {
         co_await _postponed_reevaluation.when();

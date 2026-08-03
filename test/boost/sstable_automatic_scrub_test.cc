@@ -101,6 +101,9 @@ public:
         auto close_cf = deferred_stop(table);
 
         auto& cgv = table.as_compaction_group_view();
+
+        // env().test_compaction_manager().set_scrub_period() !!!
+        
         func(table, cgv, get_all_sstables(cgv).get());
         
         // bool found_sstable = false;        
@@ -118,11 +121,11 @@ public:
     }
 };
 
-// future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
-//     while (cm.get_stats().pending_tasks != 0 || cm.get_stats().completed_tasks == 0) {
-//         co_await sleep(std::chrono::milliseconds(100));
-//     }
-// }
+future<> cm_ended_some_work(const compaction::compaction_manager& cm) {
+    while (cm.get_stats().pending_tasks != 0 || cm.get_stats().completed_tasks == 0) {
+        co_await sleep(std::chrono::milliseconds(100));
+    }
+}
 
 static void corrupt_sstable(sstables::shared_sstable sst, component_type type = component_type::Data) {
     auto f = sstables::test(sst).open_file(type, {}, {}).get();
@@ -147,16 +150,17 @@ void auto_scrub_validate_corrupted_content() {
 
         BOOST_REQUIRE_GE(sstables.size(), 1);
         for (sstables::shared_sstable& sst : sstables) {
+            sst->set_automatic_scrub_timestamp(db_clock::from_time_t(0));
             corrupt_sstable(sst);
         }
 
-        // corrupt_sstable(sst);
+        cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
 
         cm.trigger_auto_scrub_timer();
 
-        sleep(std::chrono::seconds(5)).wait();
+        // sleep(std::chrono::seconds(5)).wait();
 
-        // cm_ended_some_work(cm.get_compaction_manager()).wait();
+        cm_ended_some_work(cm.get_compaction_manager()).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         BOOST_REQUIRE(table->get_sstables()->begin()->get()->is_quarantined());
