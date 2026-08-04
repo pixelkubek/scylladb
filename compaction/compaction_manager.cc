@@ -2979,7 +2979,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
 
     // Co return here works
 
-    auto do_automatic_scrub = [this] (compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration, gate::holder gh) -> future<compaction_manager::compaction_stats_opt> {
+    auto do_automatic_scrub = [this] (this auto, compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration, gate::holder gh) -> future<compaction_manager::compaction_stats_opt> {
         if (sst->has_scylla_component()) {
             cmlog.info("Performing automatic validation for sstable {}", sst);
             
