@@ -1202,6 +1202,7 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
     while (true) {
         if (_awaiting_automatic_scrub.empty()) {
             // Wait for when reevaluation is needed.
+            utils::get_local_injector().enter("automatic_scrub_wait_for_signal");
             co_await _automatic_scrub_reevaluation.when();
         }
 
