@@ -100,8 +100,7 @@ public:
         auto& cgv = table.as_compaction_group_view();
 
         scoped_no_abort_on_malformed_sstable_error no_abort{};
-        scoped_error_injection validation_injection{"automatic_scrub_validation_iteration_finished"};
-        scoped_error_injection rewrite_injection{"automatic_scrub_rewrite_iteration_finished"};
+        scoped_error_injection validation_injection{"automatic_scrub_compaction_done"};
 
         auto sstables = get_all_sstables(cgv).get();
         BOOST_REQUIRE_EQUAL(sst_count, sstables.size());

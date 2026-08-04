@@ -144,7 +144,6 @@ private:
     
     // Compaction groups views which should be considered for automatic scrub.
     std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
-    std::optional<future<>> _automatic_scrub_task;
 
     timer<lowres_clock> _automatic_scrub_submission_timer;
 

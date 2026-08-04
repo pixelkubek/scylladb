@@ -1205,10 +1205,6 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
             co_await _automatic_scrub_reevaluation.when();
         }
         _automatic_scrub_reevaluation_needed = false;
-
-        if (_automatic_scrub_task) {
-            co_await *std::exchange(_automatic_scrub_task, std::nullopt);
-        }
         
         if (is_disabled()) {
             co_return;
@@ -2977,42 +2973,6 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         }
     }
 
-    // Co return here works
-
-    auto do_automatic_scrub = [this] (this auto, compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration, gate::holder gh) -> future<compaction_manager::compaction_stats_opt> {
-        if (sst->has_scylla_component()) {
-            cmlog.info("Performing automatic validation for sstable {}", sst);
-            
-            co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(
-                throw_if_stopping::no, 
-                info, 
-                &t, 
-                info.id, 
-                std::vector{sst}, 
-                std::move(registration),
-                compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
-            );
-        } else {
-            owned_ranges_ptr owned_ranges_ptr{};
-            sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
-            auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
-    
-            // TODO change to upgrade
-            co_return co_await perform_compaction<rewrite_sstables_compaction_task_executor>(
-                throw_if_stopping::no, 
-                info, 
-                &t, 
-                info.id, 
-                std::move(scrub_abort), 
-                std::move(owned_ranges_ptr), 
-                std::vector{sst}, 
-                std::move(registration), 
-                can_purge_tombstones::no, 
-                std::move(option_desc)
-            );
-        }
-    };    
-
     if (!registered) {
         // All the sstables in the table are either validated or
         // compacting. Remove the table from automatic scrub evaluation.
@@ -3025,15 +2985,44 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         co_return;
     }
 
-    SCYLLA_ASSERT(!_automatic_scrub_task);
-    _automatic_scrub_task.emplace(do_automatic_scrub(t, *std::move(registered), tasks::task_info{}, std::move(registration), std::move(*gh))
-    .then([this] (compaction_manager::compaction_stats_opt) -> future<> {
-        utils::get_local_injector().enter("automatic_scrub_compaction_done");
-        // TODO retrigger auto scrub (uwaga, co jak zanim wróci na conditional)
-        reevaluate_automatic_scrub();
-       
-        co_return;
-    }));
+    tasks::task_info info{};
+    auto& sst = *registered;
+    if (sst->has_scylla_component()) {
+        cmlog.info("Performing automatic validation for sstable {}", sst);
+        
+        co_await perform_compaction<validate_sstables_compaction_task_executor>(
+            throw_if_stopping::no, 
+            info, 
+            &t, 
+            info.id, 
+            std::vector{sst}, 
+            std::move(registration),
+            compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
+        );
+    } else {
+        owned_ranges_ptr owned_ranges_ptr{};
+        sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
+        auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
+
+        // TODO change to upgrade
+        co_await perform_compaction<rewrite_sstables_compaction_task_executor>(
+            throw_if_stopping::no, 
+            info, 
+            &t, 
+            info.id, 
+            std::move(scrub_abort), 
+            std::move(owned_ranges_ptr), 
+            std::vector{sst}, 
+            std::move(registration), 
+            can_purge_tombstones::no, 
+            std::move(option_desc)
+        );
+    }
+
+    utils::get_local_injector().enter("automatic_scrub_compaction_done");
+    cmlog.warn("automatic_scrub_compaction_done");
+    // TODO retrigger auto scrub (uwaga, co jak zanim wróci na conditional)
+    reevaluate_automatic_scrub();
 }
 
 }
