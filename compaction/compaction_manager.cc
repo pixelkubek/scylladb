@@ -1564,9 +1564,20 @@ public:
     }
 protected:
     future<> maybe_validate_component_digests(std::span<sstables::shared_sstable> sstables) {
-        for (const auto& sst : sstables) {
+        for (auto& sst : sstables) {
             if (_cm.should_be_automatically_scrubbed(sst)) {
-                co_await sst->validate_digests(sstables::sstable::skip_data_digest::yes);
+                std::exception_ptr ex;
+                try {
+                    co_await sst->validate_digests(sstables::sstable::skip_data_digest::yes);
+                } catch (...) {
+                    ex = std::current_exception();
+                }
+
+                if (ex) [[unlikely]] {
+                    co_await sst->change_state(sstables::sstable_state::quarantine);
+                    co_await _cm.on_suspected_disk_corruption();
+                    std::rethrow_exception(ex);
+                }
             }
             sst->set_automatic_scrub_timestamp(db_clock::now());
         }
@@ -2990,22 +3001,16 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
             compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
         );
     } else {
-        owned_ranges_ptr owned_ranges_ptr{};
-        sstring option_desc = fmt::format("mode: {};\nquarantine_mode: {}\n", compaction_type_options::scrub::mode::abort, compaction_type_options::scrub::quarantine_mode::exclude);
-        auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
-
-        // TODO change to upgrade
         co_await perform_compaction<rewrite_sstables_compaction_task_executor>(
             throw_if_stopping::no,
             info,
             &t,
             info.id,
-            std::move(scrub_abort),
-            std::move(owned_ranges_ptr),
+            compaction_type_options::make_upgrade(),
+            owned_ranges_ptr{},
             std::vector{sst},
             std::move(registration),
-            can_purge_tombstones::no,
-            std::move(option_desc)
+            can_purge_tombstones::no
         );
     }
 
