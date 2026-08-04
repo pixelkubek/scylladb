@@ -1223,7 +1223,14 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
            // Auto scrub will validate up to one sstable.
            // If there were none eligible sstables, it will remove the view
            // from the set. Otherwise, it will reschedule reevaluation.
-           auto t = *_awaiting_automatic_scrub.begin();
+           auto it = _awaiting_automatic_scrub.begin();
+           auto t = *it;
+
+           if (!_compaction_state.contains(t)) {
+               _awaiting_automatic_scrub.erase(it);
+               continue;
+           }
+           
            co_await submit_automatic_scrub(*t);
        } catch (...) {
            cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
@@ -2700,6 +2707,7 @@ future<> compaction_manager::remove(compaction_group_view& t, sstring reason) no
     // a table being removed.
     // The requirement above is provided by stop_ongoing_compactions().
     _postponed.erase(&t);
+    _awaiting_automatic_scrub.erase(&t);
 
     // Wait for all compaction tasks running under gate to terminate
     // and prevent new tasks from entering the gate.
