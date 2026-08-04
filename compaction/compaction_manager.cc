@@ -2972,13 +2972,6 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     }
 
     if (!registered) {
-        // All the sstables in the table are either validated or
-        // compacting. Remove the table from automatic scrub evaluation.
-        // After a compaction is finished, it will re-add the table if needed.
-        //
-        // UWAGA przeplot -> po kompakcji dodaje zanim to się wykona.
-        cmlog.warn("Removing cgv: {}", t);
-        _awaiting_automatic_scrub.erase(&t);
         co_return;
     }
 
