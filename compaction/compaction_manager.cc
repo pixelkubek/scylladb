@@ -2947,38 +2947,35 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     }
 
     compacting_sstable_registration registration(*this, get_compaction_state(&t));
-    std::optional<sstables::shared_sstable> registered;
 
     // TODO jak się kończy compaction, dodać cgv do reevaluation.
-    
-    co_await seastar::with_semaphore(
-        get_compaction_state(&t).sstable_set_lock, 
-        1, 
-        [this, &t, &registration, &registered] -> future<> {
-            auto all_sstables = co_await get_all_sstables(t);
-            cmlog.warn("Considering stables for {}: {}", t, all_sstables);
-            
-            for (auto& sst : all_sstables) {
-                if (!eligible_for_compaction(sst)) {
-                    continue;
-                }
 
-                if (should_be_automatically_scrubbed(sst)) {
-                    registration.register_compacting({sst});
-                    registered  = std::move(sst);
-                    co_return;
-                }
+    std::optional<sstables::shared_sstable> registered;
+    {
+        auto units = co_await get_units(get_compaction_state(&t).sstable_set_lock, 1);
+        auto all_sstables = co_await get_all_sstables(t);
+        cmlog.warn("Considering stables for {}: {}", t, all_sstables); // TO TEN LOG
+        
+        for (auto& sst : all_sstables) {
+            if (!eligible_for_compaction(sst)) {
+                continue;
+            }
+
+            if (should_be_automatically_scrubbed(sst)) {
+                registration.register_compacting({sst});
+                registered = sst;
+                break;
             }
         }
-    );
+    }
 
     // Co return here works
 
-    auto do_automatic_scrub = [this, gh = std::move(gh)] (this auto, compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration) -> future<compaction_manager::compaction_stats_opt> {
+    auto do_automatic_scrub = [this] (compaction_group_view& t, sstables::shared_sstable sst, tasks::task_info info, compacting_sstable_registration registration, gate::holder gh) -> future<compaction_manager::compaction_stats_opt> {
         if (sst->has_scylla_component()) {
             cmlog.info("Performing automatic validation for sstable {}", sst);
             
-            return perform_compaction<validate_sstables_compaction_task_executor>(
+            co_return co_await perform_compaction<validate_sstables_compaction_task_executor>(
                 throw_if_stopping::no, 
                 info, 
                 &t, 
@@ -2993,7 +2990,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
             auto scrub_abort = compaction_type_options::make_scrub(compaction_type_options::scrub::mode::abort);
     
             // TODO change to upgrade
-            return perform_compaction<rewrite_sstables_compaction_task_executor>(
+            co_return co_await perform_compaction<rewrite_sstables_compaction_task_executor>(
                 throw_if_stopping::no, 
                 info, 
                 &t, 
@@ -3006,10 +3003,7 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
                 std::move(option_desc)
             );
         }
-    };
-
-    co_return;
-    
+    };    
 
     if (!registered) {
         // All the sstables in the table are either validated or
@@ -3019,17 +3013,19 @@ future<> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
         // UWAGA przeplot -> po kompakcji dodaje zanim to się wykona.
         cmlog.warn("Removing cgv: {}", t);
         _awaiting_automatic_scrub.erase(&t);
+        reevaluate_automatic_scrub();
         co_return;
     }
-    
-    _automatic_scrub_task = do_automatic_scrub(t, *std::move(registered), tasks::task_info{}, std::move(registration))
+
+    SCYLLA_ASSERT(!_automatic_scrub_task);
+    _automatic_scrub_task.emplace(do_automatic_scrub(t, *std::move(registered), tasks::task_info{}, std::move(registration), std::move(*gh))
     .then([this] (compaction_manager::compaction_stats_opt) -> future<> {
         utils::get_local_injector().enter("automatic_scrub_compaction_done");
         // TODO retrigger auto scrub (uwaga, co jak zanim wróci na conditional)
         reevaluate_automatic_scrub();
        
         co_return;
-    });
+    }));
 }
 
 }
