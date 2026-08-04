@@ -143,19 +143,20 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_test_corrupted_ssts_with_scylla) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 5;
 
-    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         for (sstables::shared_sstable& sst : sstables) {
             sst->set_automatic_scrub_timestamp(db_clock::from_time_t(0));
             corrupt_sstable(sst);
         }
-
+        
         cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         for (auto& sst : *table->get_sstables()) {
@@ -168,8 +169,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_only_scylla_rewritten) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 1;
 
-    test.run(1, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         BOOST_REQUIRE_EQUAL(sstables.size(), 1);
@@ -187,7 +189,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_only_scylla_rewritten) {
 
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         auto new_sst = *table->get_sstables()->begin();
@@ -207,8 +209,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_with_scylla) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 5;
 
-    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         for (sstables::shared_sstable& sst : sstables) {
@@ -220,7 +223,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_with_scylla) {
         auto timestamp_before = db_clock::now();
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         for (auto& sst : *table->get_sstables()) {
@@ -233,8 +236,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_without_scylla) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 5;
 
-    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         for (sstables::shared_sstable& sst : sstables) {
@@ -247,7 +251,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_without_scylla) {
         auto timestamp_before = db_clock::now();
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_rewrite_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         for (auto& sst : *table->get_sstables()) {
@@ -261,8 +265,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_mixed) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 5;
 
-    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         for (sstables::shared_sstable& sst : sstables) {
@@ -279,8 +284,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrub_time_updated_mixed) {
         auto timestamp_before = db_clock::now();
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
-        wait_on_enter("automatic_scrub_rewrite_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
         for (auto& sst : *table->get_sstables()) {
@@ -294,8 +298,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_validated_sstables_test) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
+    constexpr auto sst_count = 5;
 
-    test.run(5, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
 
         std::vector<shared_sstable> validated, not_validated;
@@ -320,7 +325,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_validated_sstables_test) {
         cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_validation_iteration_finished").wait();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
 
