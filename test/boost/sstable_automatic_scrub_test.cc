@@ -324,7 +324,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_validated_sstables_test) {
         cm.get_compaction_manager().set_scrub_period(std::chrono::seconds(3600));
         cm.trigger_auto_scrub_timer();
 
-        wait_on_enter("automatic_scrub_compaction_done", sst_count).wait();
+        wait_on_enter("automatic_scrub_compaction_done", not_validated.size()).wait();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
 

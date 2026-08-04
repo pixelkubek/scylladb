@@ -140,7 +140,6 @@ private:
     // Fiber which waits for a signal and reevaluates automatic scrub.
     std::optional<future<>> _waiting_automatic_scrub_reevaluation;
     condition_variable _automatic_scrub_reevaluation;
-    bool _automatic_scrub_reevaluation_needed;
     
     // Compaction groups views which should be considered for automatic scrub.
     std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
