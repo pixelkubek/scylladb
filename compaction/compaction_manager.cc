@@ -2860,7 +2860,12 @@ void compaction_manager::propagate_replacement(compaction_group_view& t,
 
 future<> compaction_manager::on_suspected_disk_corruption() {
     cmlog.error("Disk corruption detected");
-    general_disk_error();
+
+    if (_cfg.isolate_on_suspected_disk_error) {
+        co_await stop();
+        general_disk_error();
+    }
+    
     co_return;
 }
 

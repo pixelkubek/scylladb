@@ -77,6 +77,7 @@ public:
         int64_t errors = 0;
     };
     using scheduling_group = backlog_controller::scheduling_group;
+    using isolate_on_suspected_disk_error = bool_class<struct isolate_on_suspected_disk_error_tag>;
     struct config {
         scheduling_group compaction_sched_group;
         scheduling_group maintenance_sched_group;
@@ -86,6 +87,7 @@ public:
         utils::updateable_value<uint32_t> throughput_mb_per_sec = utils::updateable_value<uint32_t>(0);
         std::chrono::seconds flush_all_tables_before_major = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::days(1));
         utils::updateable_value<uint32_t> scrub_period;
+        utils::updateable_value<bool> isolate_on_suspected_disk_error;
     };
 
 public:
