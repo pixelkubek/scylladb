@@ -2940,6 +2940,7 @@ void scrub_validate_corrupted_content(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -2970,6 +2971,7 @@ void scrub_validate_corrupted_file(compress_sstable compress, component_type com
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3011,6 +3013,7 @@ void scrub_validate_corrupted_digest(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3038,6 +3041,7 @@ void scrub_validate_no_digest(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3073,6 +3077,7 @@ void scrub_validate_valid(compress_sstable compress) {
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3143,6 +3148,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_multiple_instances_unc
 
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = compaction::compaction_type_options::scrub::mode::validate,
+            .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
         };
 
         utils::get_local_injector().enable("sstable_validate/pause");
@@ -3243,6 +3249,7 @@ void scrub_validate_cassandra_compat(const compression_parameters& cp, sstring s
         compaction::compaction_type_options::scrub opts = {
             .operation_mode = scrub::mode::validate,
             .quarantine_sstables = scrub::quarantine_invalid_sstables::no,
+            .may_update_timestamp = scrub::may_update_scrub_time::no,
         };
         auto stats = table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
@@ -3675,7 +3682,9 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_quarantine_mode_test) {
             testlog.info("Scrub in validate mode");
 
             // We expect the scrub with mode=scrub::mode::validate to quarantine the sstable.
-            compaction::compaction_type_options::scrub opts = {};
+            compaction::compaction_type_options::scrub opts = {
+                .may_update_timestamp = compaction::compaction_type_options::scrub::may_update_scrub_time::no,
+            };
             opts.operation_mode = compaction::compaction_type_options::scrub::mode::validate;
             table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
