@@ -84,6 +84,7 @@ public:
         utils::updateable_value<float> max_shares = utils::updateable_value<float>(0);
         utils::updateable_value<uint32_t> throughput_mb_per_sec = utils::updateable_value<uint32_t>(0);
         std::chrono::seconds flush_all_tables_before_major = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::days(1));
+        utils::updateable_value<uint32_t> scrub_period = utils::updateable_value<uint32_t>(0);
     };
 
 public:
@@ -156,6 +157,8 @@ private:
 
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
+
+    utils::observer<std::optional<std::chrono::seconds>> _scrub_period_observer;
     compaction_controller _compaction_controller;
     compaction_backlog_manager _backlog_manager;
     optimized_optional<abort_source::subscription> _early_abort_subscription;
