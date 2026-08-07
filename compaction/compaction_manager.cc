@@ -1271,22 +1271,28 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
                     continue;
                 }
     
-                auto res = co_await submit_automatic_scrub(*candidate);
+                auto res = co_await submit_automatic_scrub(*candidate, excluded_sstables);
     
-                switch (res) {
+                switch (res.status) {
                 case automatic_scrub_submission_status::valid:
                 case automatic_scrub_submission_status::invalid:
-                    // The same compaction group view will be rechecked.
                     continue;
                 case automatic_scrub_submission_status::no_eligible_sstables:
                     it++;
                     break;
                 case automatic_scrub_submission_status::retryable_fail:
+                    // The compaction didn't finish, but it may be retired.
+                    // Schedule it for the next automatic scrub.
+                    // It will be triggered earlier than the scrub period
+                    // by the TODO timer.
                     _awaiting_automatic_scrub.emplace(candidate);
                     it++;
                     break;
                 case automatic_scrub_submission_status::not_retryable_fail:
-                    // TODO store as excluded sstable
+                    // The compaction didn't finish and it shouldn't be retried.
+                    // The scrubbed sstables shouldn't be selected again
+                    // when selecting candidates for automatic scrub.
+                    excluded_sstables.emplace(*res.sst);
                 }
            }
            // TODO arm timer
@@ -3075,7 +3081,7 @@ static future<std::optional<sstables::shared_sstable>> select_sstable(compaction
     co_return res;
 }
 
-future<compaction_manager::automatic_scrub_submission_status> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
+future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
         co_return automatic_scrub_submission_status::not_retryable_fail;
