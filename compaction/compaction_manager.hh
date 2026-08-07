@@ -163,6 +163,7 @@ private:
 
     void update_automatic_scrub_submission_timer();
     std::function<void()> automatic_scrub_submission_callback();
+    std::function<void()> automatic_scrub_retry_callback();
     future<> automatic_scrub_reevaluation();
     void reevaluate_automatic_scrub() noexcept;
     future<> stop_automatic_scrub() noexcept;
@@ -177,6 +178,7 @@ private:
     config _cfg;
     timer<lowres_clock> _compaction_submission_timer;
     timer<lowres_clock> _automatic_scrub_submission_timer;
+    timer<lowres_clock> _automatic_scrub_retry_timer;
 
     utils::observer<uint32_t> _scrub_period_observer;
     std::optional<std::chrono::seconds> _scrub_period;
