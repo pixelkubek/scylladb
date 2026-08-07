@@ -3133,8 +3133,8 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
         co_return automatic_scrub_submission_status::not_retryable_fail;
     }
 
-    auto filter = [this] (const sstables::shared_sstable& sst) {
-        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst);
+    auto filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
+        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst);
     };
 
     auto units = co_await get_units(get_compaction_state(&t).sstable_set_lock, 1);
