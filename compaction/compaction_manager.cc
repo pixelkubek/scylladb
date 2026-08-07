@@ -1248,38 +1248,48 @@ std::function<void()> compaction_manager::automatic_scrub_submission_callback() 
 
 future<> compaction_manager::automatic_scrub_reevaluation() {
     while (true) {
-        if (_awaiting_automatic_scrub.empty()) {
-            // Wait for when reevaluation is needed.
-            utils::get_local_injector().enter("automatic_scrub_wait_for_signal");
-            co_await _automatic_scrub_reevaluation.when();
-        }
+        // Wait for when reevaluation is needed.
+        utils::get_local_injector().enter("automatic_scrub_wait_for_signal");
+        co_await _automatic_scrub_reevaluation.when();
 
         if (is_disabled()) {
             co_return;
         }
-
-        if (_awaiting_automatic_scrub.empty()) {
-            continue;
-        }
+        
+        auto candidates = std::exchange(_awaiting_automatic_scrub, {});
 
        try {
-           // Schedule automatic scrub for an arbitrary compaction group view.
-           // Auto scrub will validate up to one sstable.
-           // If there was an eligible sstable in the set, the compaction group
-           // view will be re-added to the set of views waiting for automatic
-           // scrub.
-           auto it = _awaiting_automatic_scrub.begin();
-           auto t = *it;
-
-           if (!_compaction_state.contains(t)) {
-               _awaiting_automatic_scrub.erase(it);
-               continue;
+           std::unordered_set<sstables::shared_sstable> excluded_sstables;
+           for (auto it = candidates.begin(); it != candidates.end();) {
+               auto candidate = *it;
+                if (is_disabled()) {
+                    co_return;
+                }
+    
+                if (!_compaction_state.contains(candidate)) {
+                    it++;
+                    continue;
+                }
+    
+                auto res = co_await submit_automatic_scrub(*candidate);
+    
+                switch (res) {
+                case automatic_scrub_submission_status::valid:
+                case automatic_scrub_submission_status::invalid:
+                    // The same compaction group view will be rechecked.
+                    continue;
+                case automatic_scrub_submission_status::no_eligible_sstables:
+                    it++;
+                    break;
+                case automatic_scrub_submission_status::retryable_fail:
+                    _awaiting_automatic_scrub.emplace(candidate);
+                    it++;
+                    break;
+                case automatic_scrub_submission_status::not_retryable_fail:
+                    // TODO store as excluded sstable
+                }
            }
-
-           auto should_resubmit = co_await submit_automatic_scrub(*t);
-           if (!should_resubmit) {
-               _awaiting_automatic_scrub.erase(it);
-           }
+           // TODO arm timer
        } catch (...) {
            cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
        }
@@ -3044,10 +3054,10 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
     return t.get_backlog_tracker();
 }
 
-future<bool> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
+future<compaction_manager::automatic_scrub_submission_status> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     auto gh = start_compaction(t);
     if (!gh) {
-        co_return false;
+        co_return automatic_scrub_submission_status::not_retryable_fail;
     }
 
     compacting_sstable_registration registration(*this, get_compaction_state(&t));
@@ -3071,7 +3081,7 @@ future<bool> compaction_manager::submit_automatic_scrub(compaction_group_view& t
     }
 
     if (!registered) {
-        co_return false;
+        co_return automatic_scrub_submission_status::no_eligible_sstables;
     }
 
     tasks::task_info info{};
@@ -3108,15 +3118,21 @@ future<bool> compaction_manager::submit_automatic_scrub(compaction_group_view& t
             std::move(failure_callback)
         );
     }
-    
-    if (res && res->validation_errors > 0) {
-        cmlog.error("Automatic scrub found suspected disk corruption");
-        on_suspected_disk_corruption();
-    }
 
     utils::get_local_injector().enter("automatic_scrub_compaction_done");
+    
+    if (!res) {
+        co_return automatic_scrub_submission_status::retryable_fail;
+    }
+    
+    if (res->validation_errors > 0) {
+        cmlog.error("Automatic scrub found suspected disk corruption");
+        on_suspected_disk_corruption();
+        co_return automatic_scrub_submission_status::invalid;
+    }
 
-    co_return true;
+
+    co_return automatic_scrub_submission_status::valid;
 }
 
 }
