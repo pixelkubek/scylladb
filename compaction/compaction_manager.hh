@@ -394,7 +394,14 @@ private:
     // Try to submit an sstable form a compaction group view for an automatic scrub.
     // Returns whether the compaction group view may need more submits
     // for a full validation.
-    future<bool> submit_automatic_scrub(compaction_group_view& t);
+    enum class automatic_scrub_submission_status {
+        valid,
+        invalid,
+        no_eligible_sstables,
+        retryable_fail,
+        not_retryable_fail,
+    };
+    future<automatic_scrub_submission_status> submit_automatic_scrub(compaction_group_view& t);
 public:
     // Submit a table to be upgraded and wait for its termination.
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, bool exclude_current_version, tasks::task_info info);
