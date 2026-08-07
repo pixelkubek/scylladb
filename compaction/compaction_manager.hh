@@ -142,10 +142,10 @@ private:
     // Fiber which waits for a signal and reevaluates automatic scrub.
     std::optional<future<>> _waiting_automatic_scrub_reevaluation;
     condition_variable _automatic_scrub_reevaluation;
-    
+
     // Compaction groups views which should be considered for automatic scrub.
     std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
-    
+
     std::unordered_map<compaction::compaction_group_view*, compaction_state> _compaction_state;
 
     // Purpose is to serialize all maintenance (non regular) compaction activity to reduce aggressiveness and space requirement.
@@ -160,7 +160,7 @@ private:
     utils::pluggable<db::system_keyspace> _sys_ks;
 
     std::function<void()> compaction_submission_callback();
-    
+
     void update_automatic_scrub_submission_timer();
     std::function<void()> automatic_scrub_submission_callback();
     future<> automatic_scrub_reevaluation();
@@ -169,7 +169,7 @@ private:
     void schedule_table_for_automatic_scrub(compaction::compaction_group_view* t);
     bool should_be_automatically_scrubbed(const sstables::shared_sstable&) const;
     std::function<void(uint32_t)> scrub_period_observer_callback();
-    
+
     // all registered tables are reevaluated at a constant interval.
     // Submission is a NO-OP when there's nothing to do, so it's fine to call it regularly.
     static constexpr std::chrono::seconds periodic_compaction_submission_interval() { return std::chrono::seconds(3600); }
@@ -401,7 +401,11 @@ private:
         retryable_fail,
         not_retryable_fail,
     };
-    future<automatic_scrub_submission_status> submit_automatic_scrub(compaction_group_view& t);
+    struct automatic_scrub_submission_result {
+        automatic_scrub_submission_status status;
+        std::optional<sstables::shared_sstable> sst;
+    };
+    future<automatic_scrub_submission_result> submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables = {});
 public:
     // Submit a table to be upgraded and wait for its termination.
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, bool exclude_current_version, tasks::task_info info);
