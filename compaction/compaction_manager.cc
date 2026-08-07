@@ -2057,11 +2057,39 @@ protected:
 // This task executor tries the compaction only once.
 // Retries will be handled by the automatic scrub itself
 class automatic_rewrite_sstables_compaction_task_executor : public rewrite_sstables_compaction_task_executor {
-std::function<void(sstables::shared_sstable)> _compaction_failure_callback;
+public:
+    using error_is_retryable = bool_class<struct error_is_retryable_tag>;
+    using failure_callback_fn = std::function<void(sstables::shared_sstable, error_is_retryable)>;
+private:
+    failure_callback_fn _compaction_failure_callback;
+
+    bool is_retryable(std::exception_ptr ex) {
+        try {
+            std::rethrow_exception(ex);
+        } catch (compaction_stopped_exception& e) {
+            cmlog.info("{}: {}: stopping", *this, e.what());
+        } catch (compaction_aborted_exception& e) {
+            cmlog.error("{}: {}: stopping", *this, e.what());
+            _cm._stats.errors++;
+        } catch (storage_io_error& e) {
+            cmlog.error("{}: failed due to storage io error: {}: stopping", *this, e.what());
+            _cm._stats.errors++;
+            _cm.do_stop();
+            throw;
+        } catch (...) {
+            if (can_proceed()) {
+                _cm._stats.errors++;
+                cmlog.error("{}: failed: {}. Will be retrited by automatic scrub", *this, std::current_exception());
+                return true;
+            }
+        }
+        return false;
+    }
+
 public:
     automatic_rewrite_sstables_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view* t, tasks::task_id parent_id, compaction_type_options options, owned_ranges_ptr owned_ranges_ptr,
                                      std::vector<sstables::shared_sstable> sstables, compacting_sstable_registration compacting,
-                                     compaction_manager::can_purge_tombstones can_purge, std::function<void(sstables::shared_sstable)> compaction_failure_callback,
+                                     compaction_manager::can_purge_tombstones can_purge, failure_callback_fn compaction_failure_callback,
                                      sstring type_options_desc = "")
         : rewrite_sstables_compaction_task_executor{mgr, do_throw_if_stopping, t, parent_id, options, owned_ranges_ptr, std::move(sstables), std::move(compacting), can_purge, std::move(type_options_desc)}
         , _compaction_failure_callback(std::move(compaction_failure_callback))
@@ -2089,7 +2117,7 @@ public:
             ex = std::current_exception();
         }
         
-        _compaction_failure_callback(sst);
+        _compaction_failure_callback(sst, error_is_retryable{is_retryable(ex)});
         finish_compaction(state::failed);
         co_return compaction_result{};
     }
@@ -3107,6 +3135,7 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
     auto& sst = *selected;
     sst->mark_automatic_validation_attempt();
     compaction_manager::compaction_stats_opt res;
+    bool error_is_retryable = true;
     if (sst->has_scylla_component()) {
         cmlog.info("Performing automatic validation for sstable {}", sst);
 
@@ -3120,8 +3149,9 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
             compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
         );
     } else {
-        auto failure_callback = [] (sstables::shared_sstable sst) {
+        auto failure_callback = [&error_is_retryable] (sstables::shared_sstable sst, automatic_rewrite_sstables_compaction_task_executor::error_is_retryable retryable) {
             cmlog.warn("Automatic rewrite failed for [{}]", sst);
+            error_is_retryable = static_cast<bool>(retryable);
         };
         
         res = co_await perform_compaction<automatic_rewrite_sstables_compaction_task_executor>(
@@ -3141,17 +3171,26 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
     utils::get_local_injector().enter("automatic_scrub_compaction_done");
     
     if (!res) {
-        co_return automatic_scrub_submission_status::retryable_fail;
+        automatic_scrub_submission_result ret {
+            .sst = sst
+        };
+        ret.status = error_is_retryable ? automatic_scrub_submission_status::retryable_fail : automatic_scrub_submission_status::not_retryable_fail;
+        co_return ret;
     }
     
     if (res->validation_errors > 0) {
         cmlog.error("Automatic scrub found suspected disk corruption");
         on_suspected_disk_corruption();
-        co_return automatic_scrub_submission_status::invalid;
+        co_return automatic_scrub_submission_result {
+            automatic_scrub_submission_status::invalid,
+            sst,
+        };
     }
 
-
-    co_return automatic_scrub_submission_status::valid;
+    co_return automatic_scrub_submission_result {
+        automatic_scrub_submission_status::valid,
+        sst,
+    };
 }
 
 }
