@@ -3046,38 +3046,51 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
     return t.get_backlog_tracker();
 }
 
+static future<std::optional<sstables::shared_sstable>> select_sstable(compaction_group_view&t, std::function<bool(const sstables::shared_sstable&)> filter) {
+    auto main_set = co_await t.main_sstable_set();
+    auto maintenance_set = co_await t.maintenance_sstable_set();
+
+    std::optional<sstables::shared_sstable> res;
+    auto do_select = [&res, filter=std::move(filter)] (const sstables::shared_sstable& sst) -> future<stop_iteration> {
+        if (filter(sst)) {
+            res = sst;
+            co_return stop_iteration::yes;
+        }
+        co_return stop_iteration::no;
+    };
+
+    co_await main_set->for_each_sstable_gently_until(do_select);
+    if (res) {
+        co_return res;
+    }
+    co_await maintenance_set->for_each_sstable_gently_until(do_select);
+    co_return res;
+}
+
 future<compaction_manager::automatic_scrub_submission_status> compaction_manager::submit_automatic_scrub(compaction_group_view& t) {
     auto gh = start_compaction(t);
     if (!gh) {
         co_return automatic_scrub_submission_status::not_retryable_fail;
     }
 
+    auto filter = [this] (const sstables::shared_sstable& sst) {
+        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst);
+    };
+
+    auto units = co_await get_units(get_compaction_state(&t).sstable_set_lock, 1);
     compacting_sstable_registration registration(*this, get_compaction_state(&t));
-
-    std::optional<sstables::shared_sstable> registered;
-    {
-        auto units = co_await get_units(get_compaction_state(&t).sstable_set_lock, 1);
-        auto all_sstables = co_await get_all_sstables(t);
-
-        for (auto& sst : all_sstables) {
-            if (!eligible_for_compaction(sst)) {
-                continue;
-            }
-
-            if (should_be_automatically_scrubbed(sst)) {
-                registration.register_compacting({sst});
-                registered = sst;
-                break;
-            }
-        }
+    auto selected = co_await select_sstable(t, std::move(filter));
+    if (selected) {
+        registration.register_compacting({*selected});
     }
+    units.return_units(1);
 
-    if (!registered) {
+    if (!selected) {
         co_return automatic_scrub_submission_status::no_eligible_sstables;
     }
 
     tasks::task_info info{};
-    auto& sst = *registered;
+    auto& sst = *selected;
     compaction_manager::compaction_stats_opt res;
     if (sst->has_scylla_component()) {
         cmlog.info("Performing automatic validation for sstable {}", sst);
