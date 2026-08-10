@@ -624,6 +624,9 @@ protected:
 
         co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace);
 
+        _cm.schedule_table_for_automatic_scrub(t);
+        _cm.reevaluate_automatic_scrub();
+        
         finish_compaction();
 
         co_return std::nullopt;
@@ -1664,6 +1667,7 @@ private:
             }
 
             if (ex) [[unlikely]] {
+                utils::get_local_injector().enter("compaction_regular_compaction_digest_mismatch_found");
                 co_await sst->change_state(sstables::sstable_state::quarantine);
                 _cm.on_suspected_disk_corruption();
                 std::rethrow_exception(ex);
