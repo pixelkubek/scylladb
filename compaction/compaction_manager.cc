@@ -1746,6 +1746,7 @@ protected:
             try {
                 // The scrub time will be updated by creating new sstables.
                 co_await maybe_validate_component_digests(descriptor.sstables);
+                utils::get_local_injector().enter("compaction_regular_compaction_validation_done");
                 
                 bool should_update_history = this->should_update_history(descriptor.options.type());
                 compaction_result res = co_await compact_sstables(std::move(descriptor), _compaction_data, on_replace);
@@ -2975,6 +2976,7 @@ void compaction_manager::propagate_replacement(compaction_group_view& t,
 
 void compaction_manager::on_suspected_disk_corruption() {
     cmlog.error("Disk corruption detected");
+    utils::get_local_injector().enter("compaction_manager_suspected_disk_corruption");
 
     if (_cfg.isolate_on_suspected_disk_error) {
         do_stop();

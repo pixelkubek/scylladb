@@ -95,6 +95,8 @@ public:
         scoped_error_injection validation_injection{"automatic_scrub_compaction_done"};
         scoped_error_injection wait_injection{"automatic_scrub_wait_for_signal"};
         scoped_error_injection found_mismatch_injection{"compaction_regular_compaction_digest_mismatch_found"};
+        scoped_error_injection suspected_disk_corruption_injection{"compaction_manager_suspected_disk_corruption"};
+        scoped_error_injection validation_done_injection{"compaction_regular_compaction_validation_done"};
 
         auto sstables = get_all_sstables(cgv).get();
 
@@ -483,6 +485,8 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_invalid
         auto sst = std::move(sstables.front());
         sst->set_scrub_time(db_clock::from_time_t(0));
         corrupt_sstable(sst);
+        
+        cm.set_scrub_period(std::chrono::seconds(3600));
 
         auto timestamp_before = db_clock::now();
 
@@ -509,12 +513,14 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_valid) 
         auto& cm = test_env.test_compaction_manager();
         auto sst = std::move(sstables.front());
         sst->set_scrub_time(db_clock::from_time_t(0));
+        
+        cm.set_scrub_period(std::chrono::seconds(3600));
 
         auto timestamp_before = db_clock::now();
 
         cm.get_compaction_manager().submit(ts);
 
-        wait_on_enter("compaction_regular_compaction_digest_mismatch_found", 1).get();
+        wait_on_enter("compaction_regular_compaction_validation_done", 1).get();
 
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
         auto new_sst = *table->get_sstables()->begin();
