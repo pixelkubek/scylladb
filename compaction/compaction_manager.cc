@@ -1653,6 +1653,24 @@ public:
     virtual void abort() noexcept override {
         return compaction_task_executor::abort(_as);
     }
+private:
+    future<> maybe_validate_component_digests(std::span<sstables::shared_sstable> sstables) {
+        for (auto& sst : sstables | std::views::filter([this](const auto& sst) { return _cm.should_be_automatically_scrubbed(sst); })) {
+            std::exception_ptr ex;
+            try {
+                co_await sst->validate_digests(sstables::sstable::skip_data_digest::no);
+            } catch (...) {
+                ex = std::current_exception();
+            }
+
+            if (ex) [[unlikely]] {
+                co_await sst->change_state(sstables::sstable_state::quarantine);
+                _cm.on_suspected_disk_corruption();
+                std::rethrow_exception(ex);
+            }
+        }
+    }
+
 protected:
     virtual future<> run() override {
         return perform();
@@ -1722,6 +1740,9 @@ protected:
             std::exception_ptr ex;
 
             try {
+                // The scrub time will be updated by creating new sstables.
+                co_await maybe_validate_component_digests(descriptor.sstables);
+                
                 bool should_update_history = this->should_update_history(descriptor.options.type());
                 compaction_result res = co_await compact_sstables(std::move(descriptor), _compaction_data, on_replace);
                 cmlog.debug("Finished minor compaction old_sstables={} new_sstables={} sstables_reapired_at={} range={} uuid={} compaction_uuid={}",
