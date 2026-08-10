@@ -472,7 +472,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_scrubs_without_timestamp) {
     });
 }
 
-SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates) {
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_invalid) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
     auto& test_env = test.env();
@@ -493,6 +493,32 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates) {
         BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
         auto new_sst = *table->get_sstables()->begin();
         BOOST_REQUIRE(new_sst->is_quarantined());
+        auto scrub_time = sst->get_scrub_time();
+        BOOST_REQUIRE(scrub_time);
+        BOOST_REQUIRE(*scrub_time > timestamp_before);
+    }, offstrategy::no);
+}
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_valid) {
+    automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+    constexpr auto sst_count = 1;
+
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+        auto sst = std::move(sstables.front());
+        sst->set_scrub_time(db_clock::from_time_t(0));
+
+        auto timestamp_before = db_clock::now();
+
+        cm.get_compaction_manager().submit(ts);
+
+        wait_on_enter("compaction_regular_compaction_digest_mismatch_found", 1).get();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), 1);
+        auto new_sst = *table->get_sstables()->begin();
+        BOOST_REQUIRE(!new_sst->is_quarantined());
         auto scrub_time = sst->get_scrub_time();
         BOOST_REQUIRE(scrub_time);
         BOOST_REQUIRE(*scrub_time > timestamp_before);
