@@ -400,8 +400,7 @@ private:
         valid,
         invalid,
         no_eligible_sstables,
-        retryable_fail,
-        not_retryable_fail,
+        fail,
     };
     struct automatic_scrub_submission_result {
         automatic_scrub_submission_status status;

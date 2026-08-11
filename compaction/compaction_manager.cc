@@ -1269,11 +1269,10 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
         
         auto candidates = std::exchange(_awaiting_automatic_scrub, {});
 
-       try {
-           std::unordered_set<sstables::shared_sstable> sstables_to_retry;
-           std::unordered_set<compaction_group_view*> tables_to_retry;
-           for (auto it = candidates.begin(); it != candidates.end();) {
-               auto candidate = *it;
+        try {
+            std::unordered_set<sstables::shared_sstable> sstables_to_retry;
+            for (auto it = candidates.begin(); it != candidates.end();) {
+                auto candidate = *it;
                 if (is_disabled()) {
                     co_return;
                 }
@@ -1292,7 +1291,7 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
                 case automatic_scrub_submission_status::no_eligible_sstables:
                     it++;
                     break;
-                case automatic_scrub_submission_status::retryable_fail:
+                case automatic_scrub_submission_status::fail:
                     // The compaction didn't finish, but it may be retired.
                     // Schedule it for the next automatic scrub.
                     // It will be triggered earlier than the scrub period
@@ -1300,19 +1299,9 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
                     _awaiting_automatic_scrub.emplace(candidate);
                     it++;
                     break;
-                case automatic_scrub_submission_status::not_retryable_fail:
-                    // The compaction didn't finish and it shouldn't be retried.
-                    // The scrubbed sstables shouldn't be selected again
-                    // when selecting candidates for automatic scrub.
-                    sstables_to_retry.emplace(*res.sst);
-                    tables_to_retry.emplace(candidate);
                 }
-           }
+            }
            if (!sstables_to_retry.empty()) {
-                for (auto& sst : tables_to_retry) {   
-                    _awaiting_automatic_scrub.emplace(std::move(sst));
-                    co_await coroutine::maybe_yield();
-                }
                _automatic_scrub_retry_timer.arm(std::chrono::seconds(30));
            }
        } catch (...) {
@@ -2105,27 +2094,22 @@ class automatic_rewrite_sstables_compaction_task_executor : public rewrite_sstab
             handle_compaction_error();
         };
     }
+
+    compaction_type_options make_scrub_options() {
+        return compaction_type_options::make_scrub(
+            compaction_type_options::scrub::mode::handle,
+            compaction_type_options::scrub::quarantine_invalid_sstables::yes, 
+            compaction_type_options::scrub::drop_unfixable_sstables::no, 
+            compaction_type_options::scrub::may_update_scrub_time::yes, 
+            make_corruption_handler()
+        );
+    }
     
 public:
-    automatic_rewrite_sstables_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view* t, tasks::task_id parent_id, compaction_type_options options, owned_ranges_ptr owned_ranges_ptr,
+    automatic_rewrite_sstables_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view* t, tasks::task_id parent_id, owned_ranges_ptr owned_ranges_ptr,
                                      std::vector<sstables::shared_sstable> sstables, compacting_sstable_registration compacting,
                                      compaction_manager::can_purge_tombstones can_purge, sstring type_options_desc = "")
-        : rewrite_sstables_compaction_task_executor(
-            mgr, 
-            do_throw_if_stopping, 
-            t, 
-            parent_id, 
-            compaction_type_options::make_scrub(
-                compaction_type_options::scrub::mode::handle,
-                compaction_type_options::scrub::quarantine_invalid_sstables::yes, 
-                compaction_type_options::scrub::drop_unfixable_sstables::no, 
-                compaction_type_options::scrub::may_update_scrub_time::yes, 
-                make_corruption_handler()
-            ), 
-            owned_ranges_ptr, 
-            std::move(sstables),
-            std::move(compacting), 
-            can_purge)
+        : rewrite_sstables_compaction_task_executor(mgr, do_throw_if_stopping, t, parent_id, make_scrub_options(), std::move(owned_ranges_ptr), std::move(sstables),std::move(compacting), can_purge)
         , _errors_found(0)
         {
             
@@ -3161,7 +3145,7 @@ static future<std::optional<sstables::shared_sstable>> select_sstable(compaction
 future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
-        co_return automatic_scrub_submission_status::not_retryable_fail;
+        co_return automatic_scrub_submission_status::fail;
     }
 
     auto filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
@@ -3183,10 +3167,8 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
     tasks::task_info info{};
     auto& sst = *selected;
     compaction_manager::compaction_stats_opt res;
-    bool error_is_retryable = true;
+    cmlog.info("Performing automatic validation for sstable {}", sst);
     if (sst->has_scylla_component()) {
-        cmlog.info("Performing automatic validation for sstable {}", sst);
-
         res = co_await perform_compaction<validate_sstables_compaction_task_executor>(
             throw_if_stopping::no,
             info,
@@ -3197,33 +3179,25 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
             compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
         );
     } else {
-        auto failure_callback = [&error_is_retryable] (sstables::shared_sstable sst, automatic_rewrite_sstables_compaction_task_executor::error_is_retryable retryable) {
-            cmlog.warn("Automatic rewrite failed for [{}]", sst);
-            error_is_retryable = static_cast<bool>(retryable);
-        };
-        
         res = co_await perform_compaction<automatic_rewrite_sstables_compaction_task_executor>(
             throw_if_stopping::no,
             info,
             &t,
             info.id,
-            compaction_type_options::make_upgrade(),
             owned_ranges_ptr{},
             std::vector{sst},
             std::move(registration),
-            can_purge_tombstones::no,
-            std::move(failure_callback)
+            can_purge_tombstones::no
         );
     }
 
     utils::get_local_injector().enter("automatic_scrub_compaction_done");
     
     if (!res) {
-        automatic_scrub_submission_result ret {
-            .sst = sst
+        co_return automatic_scrub_submission_result {
+            .status = automatic_scrub_submission_status::fail,
+            .sst = sst,
         };
-        ret.status = error_is_retryable ? automatic_scrub_submission_status::retryable_fail : automatic_scrub_submission_status::not_retryable_fail;
-        co_return ret;
     }
     
     if (res->validation_errors > 0) {
