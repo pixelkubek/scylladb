@@ -65,6 +65,7 @@ public:
             skip, // skip corrupt data, including range of rows and/or partitions that are out-of-order
             segregate, // segregate out-of-order data into streams that all contain data with correct order
             validate, // validate data, printing all errors found (sstables are only read, not rewritten)
+            handle, // like abort, but call a handler before aborting
         };
         mode operation_mode = mode::abort;
 
@@ -90,6 +91,9 @@ public:
         // May update the scrub time by rewriting the scylla metadata component.
         // Only applies to validate-mode.
         may_update_scrub_time may_update_timestamp = may_update_scrub_time::yes;
+
+        using handler_fn = std::function<void()>;
+        handler_fn corruption_handler;
     };
     struct reshard {
         // If set, resharding compaction will apply the owned_ranges to segregate sstables in vnode boundaries.
