@@ -162,9 +162,12 @@ private:
     std::function<void()> compaction_submission_callback();
 
     void update_automatic_scrub_submission_timer();
+    // Submits all period and starts automatic scrub on all of them.
     std::function<void()> automatic_scrub_submission_callback();
+    // Wakes up the automatic scrub reevaluation fiber. Used for 
     std::function<void()> automatic_scrub_retry_callback();
     future<> automatic_scrub_reevaluation();
+    future<> do_one_full_automatic_scrub_reevaluation();
     void reevaluate_automatic_scrub() noexcept;
     future<> stop_automatic_scrub() noexcept;
     void schedule_table_for_automatic_scrub(compaction::compaction_group_view* t);

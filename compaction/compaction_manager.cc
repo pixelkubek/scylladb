@@ -1257,56 +1257,61 @@ std::function<void()> compaction_manager::automatic_scrub_retry_callback() {
     };
 }
 
+future<> compaction_manager::do_one_full_automatic_scrub_reevaluation() {
+    auto candidates = std::exchange(_awaiting_automatic_scrub, {});
+    
+    std::unordered_set<sstables::shared_sstable> sstables_to_retry;
+    for (auto it = candidates.begin(); it != candidates.end();) {
+        auto candidate = *it;
+        if (is_disabled()) {
+            co_return;
+        }
+
+        if (!_compaction_state.contains(candidate)) {
+            it++;
+            continue;
+        }
+
+        auto res = co_await submit_automatic_scrub(*candidate, sstables_to_retry);
+
+        switch (res.status) {
+        case automatic_scrub_submission_status::valid:
+        case automatic_scrub_submission_status::invalid:
+            continue;
+        case automatic_scrub_submission_status::no_eligible_sstables:
+            it++;
+            break;
+        case automatic_scrub_submission_status::fail:
+            // The compaction didn't finish, but it may be retired.
+            // Schedule it for the next automatic scrub.
+            // It will be triggered earlier than the scrub period
+            // by the automatic scrub retry timer.
+            _awaiting_automatic_scrub.emplace(candidate);
+            it++;
+            break;
+        }
+    }
+    if (!sstables_to_retry.empty()) {
+        _automatic_scrub_retry_timer.arm(std::chrono::seconds(30));
+    }
+}
+
 future<> compaction_manager::automatic_scrub_reevaluation() {
     while (true) {
         // Wait for when reevaluation is needed.
         utils::get_local_injector().enter("automatic_scrub_wait_for_signal");
+
         co_await _automatic_scrub_reevaluation.when();
 
         if (is_disabled()) {
             co_return;
         }
-        
-        auto candidates = std::exchange(_awaiting_automatic_scrub, {});
 
         try {
-            std::unordered_set<sstables::shared_sstable> sstables_to_retry;
-            for (auto it = candidates.begin(); it != candidates.end();) {
-                auto candidate = *it;
-                if (is_disabled()) {
-                    co_return;
-                }
-    
-                if (!_compaction_state.contains(candidate)) {
-                    it++;
-                    continue;
-                }
-    
-                auto res = co_await submit_automatic_scrub(*candidate, sstables_to_retry);
-    
-                switch (res.status) {
-                case automatic_scrub_submission_status::valid:
-                case automatic_scrub_submission_status::invalid:
-                    continue;
-                case automatic_scrub_submission_status::no_eligible_sstables:
-                    it++;
-                    break;
-                case automatic_scrub_submission_status::fail:
-                    // The compaction didn't finish, but it may be retired.
-                    // Schedule it for the next automatic scrub.
-                    // It will be triggered earlier than the scrub period
-                    // by the automatic scrub retry timer.
-                    _awaiting_automatic_scrub.emplace(candidate);
-                    it++;
-                    break;
-                }
-            }
-           if (!sstables_to_retry.empty()) {
-               _automatic_scrub_retry_timer.arm(std::chrono::seconds(30));
-           }
-       } catch (...) {
-           cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
-       }
+            co_await do_one_full_automatic_scrub_reevaluation();
+        } catch (...) {
+            cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
+        }
    }
 }
 
@@ -2119,41 +2124,45 @@ protected:
     virtual future<compaction_result> rewrite_sstable(const sstables::shared_sstable sst) {
         co_await coroutine::switch_to(_cm.maintenance_sg());
 
-        switch_state(state::active);
-
-        auto descriptor = make_descriptor(sst);
-
-        // Reset the error count;
-        _errors_found = 0;
-        
-        // Releases reference to cleaned sstable such that respective used disk space can be freed.
-        auto on_replace = _compacting.update_on_sstable_replacement();
-
-        setup_new_compaction(descriptor.run_identifier);
-
-        std::exception_ptr ex;
-        try {
-            compaction_result res = co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace, _can_purge);
-            _cm.reevaluate_postponed_compactions();
-            finish_compaction();
-            co_return res;  // done with current sstable
-        } catch (...) {
-            ex = std::current_exception();
-        }
-
-        // Scrub in handle mode must have called the handler.
-        if (_errors_found) {
-            co_await sst->change_state(sstables::sstable_state::quarantine);
+        for (;;) {
+            switch_state(state::active);
+    
+            auto descriptor = make_descriptor(sst);
+    
+            // Reset the error count;
+            _errors_found = 0;
+            
+            // Releases reference to cleaned sstable such that respective used disk space can be freed.
+            auto on_replace = _compacting.update_on_sstable_replacement();
+    
+            setup_new_compaction(descriptor.run_identifier);
+    
+            std::exception_ptr ex;
+            try {
+                compaction_result res = co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace, _can_purge);
+                _cm.reevaluate_postponed_compactions();
+                finish_compaction();
+                co_return res;  // done with current sstable
+            } catch (...) {
+                ex = std::current_exception();
+            }
+    
+            // Scrub in handle mode must have called the handler.
+            if (_errors_found) {
+                co_await sst->change_state(sstables::sstable_state::quarantine);
+                finish_compaction(state::failed);
+                co_return compaction_result {
+                    .stats = {
+                        .validation_errors = _errors_found
+                    },
+                };
+            }
+    
             finish_compaction(state::failed);
-            co_return compaction_result {
-                .stats = {
-                    .validation_errors = _errors_found
-                },
-            };
+            if ((co_await maybe_retry(std::move(ex), false)) == stop_iteration::yes) {
+                co_return compaction_result{};
+            }
         }
-
-        finish_compaction(state::failed);
-        co_return compaction_result{};
     }
 };
 
