@@ -2143,6 +2143,8 @@ protected:
 
         // Scrub in handle mode must have called the handler.
         if (_errors_found) {
+            co_await sst->change_state(sstables::sstable_state::quarantine);
+            finish_compaction(state::failed);
             co_return compaction_result {
                 .stats = {
                     .validation_errors = _errors_found
