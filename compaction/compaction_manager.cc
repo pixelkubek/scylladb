@@ -1109,8 +1109,6 @@ compaction_manager::compaction_manager(config cfg, abort_source& as, tasks::task
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(std::move(cfg))
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
-    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
-    , _automatic_scrub_retry_timer(compaction_sg(), automatic_scrub_retry_callback())
     , _scrub_period_observer(_cfg.scrub_period.observe(scrub_period_observer_callback()))
     , _compaction_controller(make_compaction_controller(compaction_sg(), static_shares(), _cfg.max_shares.get(), [this] () -> float {
         _last_backlog = backlog();
@@ -1145,8 +1143,6 @@ compaction_manager::compaction_manager(tasks::task_manager& tm)
     , _sys_ks("compaction_manager::system_keyspace")
     , _cfg(config{ .available_memory = 1 })
     , _compaction_submission_timer(compaction_sg(), compaction_submission_callback())
-    , _automatic_scrub_submission_timer(compaction_sg(), automatic_scrub_submission_callback())
-    , _automatic_scrub_retry_timer(compaction_sg(), automatic_scrub_retry_callback())
     , _scrub_period_observer(_cfg.scrub_period.observe(scrub_period_observer_callback()))
     , _compaction_controller(make_compaction_controller(compaction_sg(), 1, std::nullopt, [] () -> float { return 1.0; }))
     , _backlog_manager(_compaction_controller)
@@ -1251,48 +1247,32 @@ std::function<void()> compaction_manager::automatic_scrub_submission_callback() 
     };
 }
 
-std::function<void()> compaction_manager::automatic_scrub_retry_callback() {
-    return [this] {
-        reevaluate_automatic_scrub();
-    };
-}
 
-future<> compaction_manager::do_one_full_automatic_scrub_reevaluation() {
-    auto candidates = std::exchange(_awaiting_automatic_scrub, {});
-    
-    std::unordered_set<sstables::shared_sstable> sstables_to_retry;
-    for (auto it = candidates.begin(); it != candidates.end();) {
-        auto candidate = *it;
+future<> compaction_manager::do_automatic_scrub_for_table(compaction_group_view& t) {
+    for (;;) {
+        std::unordered_set<sstables::shared_sstable> sstables_to_exclude;
         if (is_disabled()) {
             co_return;
         }
 
-        if (!_compaction_state.contains(candidate)) {
-            it++;
-            continue;
+        if (!_compaction_state.contains(&t)) {
+            co_return;
         }
 
-        auto res = co_await submit_automatic_scrub(*candidate, sstables_to_retry);
+        auto res = co_await submit_automatic_scrub(t, sstables_to_exclude);
 
         switch (res.status) {
-        case automatic_scrub_submission_status::valid:
-        case automatic_scrub_submission_status::invalid:
-            continue;
         case automatic_scrub_submission_status::no_eligible_sstables:
-            it++;
-            break;
+            co_return;
         case automatic_scrub_submission_status::fail:
             // The compaction didn't finish, but it may be retired.
             // Schedule it for the next automatic scrub.
             // It will be triggered earlier than the scrub period
             // by the automatic scrub retry timer.
-            _awaiting_automatic_scrub.emplace(candidate);
-            it++;
+            sstables_to_exclude.emplace(*res.sst);
             break;
+        default:
         }
-    }
-    if (!sstables_to_retry.empty()) {
-        _automatic_scrub_retry_timer.arm(std::chrono::seconds(30));
     }
 }
 
@@ -1308,7 +1288,10 @@ future<> compaction_manager::automatic_scrub_reevaluation() {
         }
 
         try {
-            co_await do_one_full_automatic_scrub_reevaluation();
+            auto candidates = std::exchange(_awaiting_automatic_scrub, {});
+            for (auto candidate : candidates) {
+                co_await do_automatic_scrub_for_table(*candidate);
+            }
         } catch (...) {
             cmlog.warn("Automatic scrub submission failed: {}", std::current_exception());
         }
@@ -1549,7 +1532,6 @@ future<> compaction_manager::really_do_stop() noexcept {
     _compaction_submission_timer.cancel();
     _scrub_period_observer.disconnect();
     _automatic_scrub_submission_timer.cancel();
-    _automatic_scrub_retry_timer.cancel();
     co_await _compaction_controller.shutdown();
     co_await _update_compaction_static_shares_action.join();
     cmlog.info("Stopped");
@@ -2159,7 +2141,7 @@ protected:
             }
     
             finish_compaction(state::failed);
-            if ((co_await maybe_retry(std::move(ex), false)) == stop_iteration::yes) {
+            if ((co_await maybe_retry(std::move(ex), true)) == stop_iteration::yes) {
                 co_return compaction_result{};
             }
         }
