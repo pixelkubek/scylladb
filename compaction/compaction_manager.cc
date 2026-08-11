@@ -2093,44 +2093,45 @@ protected:
 // This task executor tries the compaction only once.
 // Retries will be handled by the automatic scrub itself
 class automatic_rewrite_sstables_compaction_task_executor : public rewrite_sstables_compaction_task_executor {
-public:
-    using error_is_retryable = bool_class<struct error_is_retryable_tag>;
-    using failure_callback_fn = std::function<void(sstables::shared_sstable, error_is_retryable)>;
-private:
-    failure_callback_fn _compaction_failure_callback;
+    using handler_fn = compaction_type_options::scrub::handler_fn;
+    size_t _errors_found;
 
-    bool is_retryable(std::exception_ptr ex) {
-        try {
-            std::rethrow_exception(ex);
-        } catch (compaction_stopped_exception& e) {
-            cmlog.info("{}: {}: stopping", *this, e.what());
-        } catch (compaction_aborted_exception& e) {
-            cmlog.error("{}: {}: stopping", *this, e.what());
-            _cm._stats.errors++;
-        } catch (storage_io_error& e) {
-            cmlog.error("{}: failed due to storage io error: {}: stopping", *this, e.what());
-            _cm._stats.errors++;
-            _cm.do_stop();
-            throw;
-        } catch (...) {
-            if (can_proceed()) {
-                _cm._stats.errors++;
-                cmlog.error("{}: failed: {}. Will be retrited by automatic scrub", *this, std::current_exception());
-                return true;
-            }
-        }
-        return false;
+    void handle_compaction_error() noexcept {
+        _errors_found++;
     }
-
+    
+    handler_fn make_corruption_handler() noexcept {
+        return [this] {
+            handle_compaction_error();
+        };
+    }
+    
 public:
     automatic_rewrite_sstables_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view* t, tasks::task_id parent_id, compaction_type_options options, owned_ranges_ptr owned_ranges_ptr,
                                      std::vector<sstables::shared_sstable> sstables, compacting_sstable_registration compacting,
-                                     compaction_manager::can_purge_tombstones can_purge, failure_callback_fn compaction_failure_callback,
-                                     sstring type_options_desc = "")
-        : rewrite_sstables_compaction_task_executor{mgr, do_throw_if_stopping, t, parent_id, options, owned_ranges_ptr, std::move(sstables), std::move(compacting), can_purge, std::move(type_options_desc)}
-        , _compaction_failure_callback(std::move(compaction_failure_callback))
-    {}
+                                     compaction_manager::can_purge_tombstones can_purge, sstring type_options_desc = "")
+        : rewrite_sstables_compaction_task_executor(
+            mgr, 
+            do_throw_if_stopping, 
+            t, 
+            parent_id, 
+            compaction_type_options::make_scrub(
+                compaction_type_options::scrub::mode::handle,
+                compaction_type_options::scrub::quarantine_invalid_sstables::yes, 
+                compaction_type_options::scrub::drop_unfixable_sstables::no, 
+                compaction_type_options::scrub::may_update_scrub_time::yes, 
+                make_corruption_handler()
+            ), 
+            owned_ranges_ptr, 
+            std::move(sstables),
+            std::move(compacting), 
+            can_purge)
+        , _errors_found(0)
+        {
+            
+        }
 
+protected:
     virtual future<compaction_result> rewrite_sstable(const sstables::shared_sstable sst) {
         co_await coroutine::switch_to(_cm.maintenance_sg());
 
@@ -2138,6 +2139,9 @@ public:
 
         auto descriptor = make_descriptor(sst);
 
+        // Reset the error count;
+        _errors_found = 0;
+        
         // Releases reference to cleaned sstable such that respective used disk space can be freed.
         auto on_replace = _compacting.update_on_sstable_replacement();
 
@@ -2152,8 +2156,16 @@ public:
         } catch (...) {
             ex = std::current_exception();
         }
-        
-        _compaction_failure_callback(sst, error_is_retryable{is_retryable(ex)});
+
+        // Scrub in handle mode must have called the handler.
+        if (_errors_found) {
+            co_return compaction_result {
+                .stats = {
+                    .validation_errors = _errors_found
+                },
+            };
+        }
+
         finish_compaction(state::failed);
         co_return compaction_result{};
     }
