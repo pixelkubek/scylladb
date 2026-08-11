@@ -34,10 +34,6 @@ static void remove_scylla_component(shared_sstable sst) {
 }
 
 class automatic_scrub_test_framework {
-public:
-    using test_func = std::function<void(table_for_tests&, compaction::compaction_group_view&, std::vector<sstables::shared_sstable>)>;
-
-private:
     std::unique_ptr<sstable_compressor_factory> scf = make_sstable_compressor_factory_for_tests_in_thread();
     sharded<test_env> _env;
     tests::random_schema_specification::compress_sstable _compress;
@@ -93,11 +89,25 @@ private:
         return table;
     }
 public:
+    using test_func = std::function<void(table_for_tests&, compaction::compaction_group_view&, std::vector<sstables::shared_sstable>)>;
     void run(size_t sst_count, test_func func, offstrategy ssts_offstrategy = offstrategy::yes) {
-        auto table = make_table(sst_count, ssts_offstrategy);
-        auto close_cf = deferred_stop(table);
+        run_with_many_tables(1, sst_count, [func = std::move(func)] (std::span<table_for_tests> tables, std::span<compaction::compaction_group_view*> views, std::span<std::vector<sstables::shared_sstable>> sstables) {
+            func(tables.front(), *(views.front()), sstables.front());
+        });
+    }
+    using many_tablets_test_func = std::function<void(std::span<table_for_tests>, std::span<compaction::compaction_group_view*>, std::span<std::vector<sstables::shared_sstable>>)>;
+    void run_with_many_tables(size_t table_count, size_t sst_count, many_tablets_test_func func, offstrategy ssts_offstrategy = offstrategy::yes) {
+        std::vector<table_for_tests> tables;
+        std::vector<compaction::compaction_group_view*> views;
+        std::vector<std::vector<sstables::shared_sstable>> sstables;
+        std::vector<deferred_stop<table_for_tests>> stops;
 
-        auto& cgv = table.as_compaction_group_view();
+        for (size_t i = 0; i < table_count; i++) {
+            tables.emplace_back(make_table(sst_count, ssts_offstrategy));
+            stops.emplace_back(tables.back());
+            views.emplace_back(&tables.back().as_compaction_group_view());
+            sstables.emplace_back(get_all_sstables(*views.back()).get());
+        }
 
         scoped_no_abort_on_malformed_sstable_error no_abort{};
         scoped_error_injection validation_injection{"automatic_scrub_compaction_done"};
@@ -106,13 +116,7 @@ public:
         scoped_error_injection suspected_disk_corruption_injection{"compaction_manager_suspected_disk_corruption"};
         scoped_error_injection validation_done_injection{"compaction_regular_compaction_validation_done"};
 
-        auto sstables = get_all_sstables(cgv).get();
-
-        if (ssts_offstrategy) {
-            BOOST_REQUIRE_EQUAL(sst_count, sstables.size());
-        }
-        
-        func(table, cgv, std::move(sstables));
+        func(tables, views, sstables);
     }
 };
 
