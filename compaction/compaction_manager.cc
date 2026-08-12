@@ -1249,7 +1249,7 @@ std::function<void()> compaction_manager::automatic_scrub_submission_callback() 
 
 
 future<> compaction_manager::do_automatic_scrub_for_table(compaction_group_view& t) {
-    std::unordered_set<sstables::shared_sstable> sstables_to_exclude;
+    std::unordered_set<sstables::generation_type> sstables_to_exclude;
     for (;;) {
         if (is_disabled()) {
             co_return;
@@ -1266,7 +1266,7 @@ future<> compaction_manager::do_automatic_scrub_for_table(compaction_group_view&
         }
 
         if (res.sst_to_exclude) {
-            sstables_to_exclude.emplace(*res.sst_to_exclude);
+            sstables_to_exclude.emplace(res.sst_to_exclude->get()->generation());
         }
     }
 }
@@ -3130,7 +3130,7 @@ static future<std::optional<sstables::shared_sstable>> select_sstable(compaction
     co_return res;
 }
 
-future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables) {
+future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::generation_type> excluded_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
         co_return automatic_scrub_submission_result {
@@ -3139,7 +3139,7 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
     }
 
     auto filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
-        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst);
+        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst->generation());
     };
 
     auto& compaction_state = get_compaction_state(&t);

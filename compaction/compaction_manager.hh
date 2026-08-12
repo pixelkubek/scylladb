@@ -400,7 +400,7 @@ private:
         bool done_with_view;
         std::optional<sstables::shared_sstable> sst_to_exclude;
     };
-    future<automatic_scrub_submission_result> submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables = {});
+    future<automatic_scrub_submission_result> submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::generation_type> excluded_sstables = {});
 public:
     // Submit a table to be upgraded and wait for its termination.
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::compaction_group_view& t, bool exclude_current_version, tasks::task_info info);
