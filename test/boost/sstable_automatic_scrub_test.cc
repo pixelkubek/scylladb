@@ -571,10 +571,15 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_if_failed) {
 
         for (auto& view : views) {
             // Table for tests registers an additional compaction group view
-            // for its sstables.
+            // for its sstables (additional to the compaction group view
+            // ceated by the column family).
+            // 
             // Remove this compaction group view from the compaction manager
             // for the purposes of this test. All sstables will be accessible
             // through other compaction group views.
+            // 
+            // In this way, sstables are accessible only through one compaction
+            // group view and automatic scrub will not submit them multiple times.
             cm.get_compaction_manager().remove(*view).get();
         }
         
@@ -663,6 +668,10 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_if_failed) {
 //         BOOST_REQUIRE(*scrub_time > timestamp_before);
 //     }, offstrategy::no);
 // }
+
+// Test updateable scrub time value
+// 
+// 
 
 // SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_valid) {
 //     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
