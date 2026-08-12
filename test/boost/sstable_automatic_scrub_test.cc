@@ -104,9 +104,12 @@ public:
 
         for (size_t i = 0; i < table_count; i++) {
             tables.emplace_back(make_table(sst_count, ssts_offstrategy));
-            stops.emplace_back(tables.back());
             views.emplace_back(&tables.back().as_compaction_group_view());
             sstables.emplace_back(get_all_sstables(*views.back()).get());
+        }
+
+        for (auto& table : tables) {
+            stops.emplace_back(table);
         }
 
         scoped_no_abort_on_malformed_sstable_error no_abort{};
@@ -511,6 +514,44 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_finds_corruption_no_scylla_component
         }
     });
 }
+
+SEASTAR_THREAD_TEST_CASE(sstable_auto_validates_all_tables) {
+    automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+    constexpr auto table_count = 5;
+    constexpr auto sst_count = 5;
+
+    test.run_with_many_tables(table_count, sst_count, [&test_env] (std::span<table_for_tests> tables, std::span<compaction::compaction_group_view*> views, std::span<std::vector<sstables::shared_sstable>> sstable_sets) {
+        auto& cm = test_env.test_compaction_manager();
+
+        for (sstables::shared_sstable& sst : std::views::join(sstable_sets)) {
+            sst->set_scrub_time(db_clock::from_time_t(0));
+        }
+        
+        auto timestamp_before = db_clock::now();
+        
+        cm.set_scrub_period(std::chrono::seconds(3600));
+        cm.trigger_auto_scrub_timer();
+
+        wait_on_enter("automatic_scrub_compaction_done", sst_count * table_count).get();
+
+        for (auto [table, view, sstables] : std::views::zip(tables, views, sstable_sets)) {
+            BOOST_REQUIRE(table->get_sstables());
+            BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+            for (auto& sst : sstables) {
+                BOOST_REQUIRE(sst->unlinked_at());
+            }
+            for (auto& sst : *table->get_sstables()) {
+                auto timestamp = sst->get_scrub_time();
+                BOOST_REQUIRE(timestamp);
+                BOOST_REQUIRE(*timestamp > timestamp_before);
+            }
+        }
+    });
+}
+
+// Only one sstable is taken
 
 // SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_regular_compaction_validates_invalid) {
 //     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
