@@ -1766,10 +1766,14 @@ future<shared_sstable> sstable::link_with_rewritten_metadata(std::function<share
     
     return seastar::async([this, creator = std::move(sstable_creator), modifier = std::move(modifier), update_id] {
         auto new_sst = creator(shared_from_this());
+
+        auto lock = get_units(_mutate_sem, 1).get();
         auto generation = new_sst->generation();
 
         _storage->link_with_excluded_components(*this, generation, {component_type::Scylla}).get();
         new_sst->copy_components(*this).get();
+
+        new_sst->mark_created_by_component_rewrite();
 
         scylla_metadata metadata;
         read_simple<component_type::Scylla>(metadata).get();
