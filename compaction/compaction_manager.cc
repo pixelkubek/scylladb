@@ -1365,7 +1365,7 @@ bool compaction_manager::should_be_automatically_scrubbed(const sstables::shared
     }
 
     auto now = db_clock::now();
-    auto scrub_older_than = now - *_scrub_period;
+    auto scrub_older_than = now - (*_scrub_period / 2);
     
     if (!sst->has_scylla_component()) {
         // We don't know when it was last validated.
