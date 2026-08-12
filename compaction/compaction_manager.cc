@@ -1751,8 +1751,6 @@ protected:
                     co_await update_history(*_compacting_table, std::move(res), _compaction_data);
                 }
                 _cm.reevaluate_postponed_compactions();
-                _cm.schedule_table_for_automatic_scrub(&t);
-                _cm.reevaluate_automatic_scrub();
                 continue;
             } catch (...) {
                 ex = std::current_exception();
@@ -2054,8 +2052,6 @@ protected:
                 compaction_result res = co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace, _can_purge);
                 finish_compaction();
                 _cm.reevaluate_postponed_compactions();
-                _cm.schedule_table_for_automatic_scrub(_compacting_table);
-                _cm.reevaluate_automatic_scrub();
                 co_return res;  // done with current sstable
             } catch (...) {
                 ex = std::current_exception();
@@ -2546,8 +2542,6 @@ private:
                 co_await compact_sstables_and_update_history(descriptor, _compaction_data, on_replace);
                 finish_compaction();
                 _cm.reevaluate_postponed_compactions();
-                _cm.schedule_table_for_automatic_scrub(_compacting_table);
-                _cm.reevaluate_automatic_scrub();
                 co_return;  // done with current job
             } catch (...) {
                 ex = std::current_exception();
@@ -2877,6 +2871,7 @@ future<> compaction_manager::remove(compaction_group_view& t, sstring reason) no
     // The requirement above is provided by stop_ongoing_compactions().
     _postponed.erase(&t);
     _awaiting_automatic_scrub.erase(&t);
+    _unfinished_automatic_scrub.erase(&t);
 
     // Wait for all compaction tasks running under gate to terminate
     // and prevent new tasks from entering the gate.
