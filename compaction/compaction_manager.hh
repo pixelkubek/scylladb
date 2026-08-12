@@ -396,15 +396,9 @@ private:
     // Try to submit an sstable form a compaction group view for an automatic scrub.
     // Returns whether the compaction group view may need more submits
     // for a full validation.
-    enum class automatic_scrub_submission_status {
-        valid,
-        invalid,
-        no_eligible_sstables,
-        fail,
-    };
     struct automatic_scrub_submission_result {
-        automatic_scrub_submission_status status;
-        std::optional<sstables::shared_sstable> sst;
+        bool done_with_view;
+        std::optional<sstables::shared_sstable> sst_to_exclude;
     };
     future<automatic_scrub_submission_result> submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables = {});
 public:

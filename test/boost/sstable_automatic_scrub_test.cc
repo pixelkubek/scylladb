@@ -37,9 +37,11 @@ class automatic_scrub_test_framework {
     std::unique_ptr<sstable_compressor_factory> scf = make_sstable_compressor_factory_for_tests_in_thread();
     sharded<test_env> _env;
     tests::random_schema_specification::compress_sstable _compress;
+    size_t _schema_counter;
 public:
     automatic_scrub_test_framework(tests::random_schema_specification::compress_sstable compress)
         : _compress(compress)
+        , _schema_counter(0)
     {
         _env.start(test_env_config(), std::ref(*scf)).get();
     }
@@ -53,7 +55,7 @@ public:
 private:
     tests::random_schema make_random_schema(uint32_t seed) {
         auto spec = tests::make_random_schema_specification(
-            "automatic_scrub_test_framework" + tests::random::get_sstring(),
+            "automatic_scrub_test_framework_" + fmt::to_string(_schema_counter++),
             std::uniform_int_distribution<size_t>(2, 4),
             std::uniform_int_distribution<size_t>(2, 4),
             std::uniform_int_distribution<size_t>(2, 8),
@@ -550,6 +552,73 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_validates_all_tables) {
         }
     });
 }
+
+// Sstables for which compaction fails should not be retried in the same scrub reevaluation period.
+// This could cause a deadlock, when auto-scrub is repeatedly retrying the same sstable.
+SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_if_failed) {
+    automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+    constexpr auto table_count = 2;
+    constexpr auto sst_count = 5;
+
+    test.run_with_many_tables(table_count, sst_count, [&test_env] (std::span<table_for_tests> tables, std::span<compaction::compaction_group_view*> views, std::span<std::vector<sstables::shared_sstable>> sstable_sets) {
+        auto& cm = test_env.test_compaction_manager();
+
+        for (sstables::shared_sstable& sst : std::views::join(sstable_sets)) {
+            sst->set_scrub_time(db_clock::from_time_t(0));
+        }
+        
+        auto timestamp_before = db_clock::now();
+        
+        cm.set_scrub_period(std::chrono::seconds(3600));
+        cm.trigger_auto_scrub_timer();
+
+        utils::get_local_injector().enable_on_all("automatic_scrub_compaction_fail", true).wait();
+
+        std::exception_ptr ex;
+        try {
+            wait_on_enter("automatic_scrub_compaction_done", sst_count * table_count).get();
+        } catch (...) {
+            ex = std::current_exception();
+        }
+
+        utils::get_local_injector().disable_on_all("automatic_scrub_compaction_fail").wait();
+        if (ex) {
+            std::rethrow_exception(ex);
+        }
+
+        size_t validated = 0;
+        for (auto [table, view, sstables] : std::views::zip(tables, views, sstable_sets)) {
+            BOOST_REQUIRE(table->get_sstables());
+            BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+            for (auto& sst : *table->get_sstables()) {
+                auto timestamp = sst->get_scrub_time();
+                BOOST_REQUIRE(timestamp);
+                if (*timestamp > timestamp_before) {
+                    validated++;
+                }
+            }
+        }
+
+        BOOST_REQUIRE_EQUAL(validated, table_count * sst_count - 1);
+
+        cm.trigger_auto_scrub_timer();
+        wait_on_enter("automatic_scrub_compaction_done", sst_count * table_count + 1).get();
+
+        for (auto [table, view, sstables] : std::views::zip(tables, views, sstable_sets)) {
+            BOOST_REQUIRE(table->get_sstables());
+            BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+            for (auto& sst : *table->get_sstables()) {
+                auto timestamp = sst->get_scrub_time();
+                BOOST_REQUIRE(timestamp);
+                BOOST_REQUIRE(*timestamp > timestamp_before);
+            }
+        }
+    });
+}
+
+// Abort doesn't cancel auto scrub
 
 // Only one sstable is taken
 

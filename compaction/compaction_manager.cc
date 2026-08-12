@@ -1261,17 +1261,12 @@ future<> compaction_manager::do_automatic_scrub_for_table(compaction_group_view&
 
         auto res = co_await submit_automatic_scrub(t, sstables_to_exclude);
 
-        switch (res.status) {
-        case automatic_scrub_submission_status::no_eligible_sstables:
+        if (res.done_with_view) {
             co_return;
-        case automatic_scrub_submission_status::fail:
-            // The compaction didn't finish, but it may be retired.
-            // Schedule it for the next automatic scrub.
-            // It will be triggered earlier than the scrub period
-            // by the automatic scrub retry timer.
-            sstables_to_exclude.emplace(*res.sst);
-            break;
-        default:
+        }
+
+        if (res.sst_to_exclude) {
+            sstables_to_exclude.emplace(*res.sst_to_exclude);
         }
     }
 }
@@ -3138,15 +3133,18 @@ static future<std::optional<sstables::shared_sstable>> select_sstable(compaction
 future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::shared_sstable> excluded_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
-        co_return automatic_scrub_submission_status::fail;
+        co_return automatic_scrub_submission_result {
+            .done_with_view = true,
+        };
     }
 
     auto filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
         return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst);
     };
 
-    auto units = co_await get_units(get_compaction_state(&t).sstable_set_lock, 1);
-    compacting_sstable_registration registration(*this, get_compaction_state(&t));
+    auto& compaction_state = get_compaction_state(&t);
+    auto units = co_await get_units(compaction_state.sstable_set_lock, 1);
+    compacting_sstable_registration registration(*this, compaction_state);
     auto selected = co_await select_sstable(t, std::move(filter));
     if (selected) {
         registration.register_compacting({*selected});
@@ -3154,42 +3152,68 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
     units.return_units(1);
 
     if (!selected) {
-        co_return automatic_scrub_submission_status::no_eligible_sstables;
+        co_return automatic_scrub_submission_result {
+            .done_with_view = true,
+        };
     }
+    auto& sst = *selected;
 
     tasks::task_info info{};
-    auto& sst = *selected;
     compaction_manager::compaction_stats_opt res;
+    std::exception_ptr ex;
     cmlog.info("Performing automatic validation for sstable {}", sst);
-    if (sst->has_scylla_component()) {
-        res = co_await perform_compaction<validate_sstables_compaction_task_executor>(
-            throw_if_stopping::no,
-            info,
-            &t,
-            info.id,
-            std::vector{sst},
-            std::move(registration),
-            compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
-        );
-    } else {
-        res = co_await perform_compaction<automatic_rewrite_sstables_compaction_task_executor>(
-            throw_if_stopping::no,
-            info,
-            &t,
-            info.id,
-            owned_ranges_ptr{},
-            std::vector{sst},
-            std::move(registration),
-            can_purge_tombstones::no
-        );
+    try {
+        utils::get_local_injector().inject("automatic_scrub_compaction_fail", [] {
+           throw std::runtime_error{"automatic_scrub_compaction_fail error injection"} ;
+        });
+        
+        if (sst->has_scylla_component()) {
+            res = co_await perform_compaction<validate_sstables_compaction_task_executor>(
+                throw_if_stopping::no,
+                info,
+                &t,
+                info.id,
+                std::vector{sst},
+                std::move(registration),
+                compaction_manager::quarantine_invalid_sstables::yes, compaction_manager::may_update_scrub_time::yes
+            );
+        } else {
+            res = co_await perform_compaction<automatic_rewrite_sstables_compaction_task_executor>(
+                throw_if_stopping::no,
+                info,
+                &t,
+                info.id,
+                owned_ranges_ptr{},
+                std::vector{sst},
+                std::move(registration),
+                can_purge_tombstones::no
+            );
+        }
+    } catch (...) {
+        ex = std::current_exception();
     }
 
     utils::get_local_injector().enter("automatic_scrub_compaction_done");
+
+    if (ex) {
+        cmlog.warn("Automatic validation for [{}] failed because of: {}", sst, ex);
+        
+        // Exclude the sstable from being selected again in this automatic
+        // scrub reevaluation.
+        // The automatic rewrite will retry the compaction in the task executor
+        // if it is retryable.
+        // Scrub in validate mode shoudn't fail in most cases.
+        // The sstable can get resubmitten in future automatic
+        // scrub reevaluations.
+        co_return automatic_scrub_submission_result {
+            .done_with_view = false,
+            .sst_to_exclude = sst
+        };
+    }
     
     if (!res) {
         co_return automatic_scrub_submission_result {
-            .status = automatic_scrub_submission_status::fail,
-            .sst = sst,
+            .done_with_view = false,
         };
     }
     
@@ -3197,14 +3221,15 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
         cmlog.error("Automatic scrub found suspected disk corruption");
         on_suspected_disk_corruption();
         co_return automatic_scrub_submission_result {
-            automatic_scrub_submission_status::invalid,
-            sst,
+            .done_with_view = false,
+            .sst_to_exclude = sst,
         };
     }
 
     co_return automatic_scrub_submission_result {
-        automatic_scrub_submission_status::valid,
-        sst,
+        .done_with_view = false,
+        // No need to exclude sstable, the scrub time will prevent
+        // it from being picked again.
     };
 }
 
