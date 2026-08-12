@@ -145,6 +145,7 @@ private:
 
     // Compaction groups views which should be considered for automatic scrub.
     std::unordered_set<compaction::compaction_group_view*> _awaiting_automatic_scrub;
+    std::unordered_set<compaction::compaction_group_view*> _unfinished_automatic_scrub;
 
     std::unordered_map<compaction::compaction_group_view*, compaction_state> _compaction_state;
 
@@ -168,6 +169,7 @@ private:
     future<> do_automatic_scrub_for_table(compaction_group_view& t);
     void reevaluate_automatic_scrub() noexcept;
     future<> stop_automatic_scrub() noexcept;
+    void maybe_schedule_table_for_automatic_scrub(compaction::compaction_group_view& t);
     void schedule_table_for_automatic_scrub(compaction::compaction_group_view* t);
     bool should_be_automatically_scrubbed(const sstables::shared_sstable&) const;
     std::function<void(uint32_t)> scrub_period_observer_callback();
@@ -397,7 +399,7 @@ private:
     // Returns whether the compaction group view may need more submits
     // for a full validation.
     struct automatic_scrub_submission_result {
-        bool done_with_view;
+        bool done_with_view = false;
         std::optional<sstables::shared_sstable> sst_to_exclude;
     };
     future<automatic_scrub_submission_result> submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::generation_type> excluded_sstables = {});

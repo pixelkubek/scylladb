@@ -1355,6 +1355,14 @@ void compaction_manager::postpone_compaction_for_table(compaction_group_view* t)
     _postponed.insert(t);
 }
 
+
+void compaction_manager::maybe_schedule_table_for_automatic_scrub(compaction::compaction_group_view& t) {
+    if (_unfinished_automatic_scrub.contains(&t)) {
+        schedule_table_for_automatic_scrub(&t);
+        reevaluate_automatic_scrub();
+    }
+}
+
 void compaction_manager::schedule_table_for_automatic_scrub(compaction_group_view* t) {
     _awaiting_automatic_scrub.insert(t);
 }
@@ -3111,27 +3119,36 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
     return t.get_backlog_tracker();
 }
 
-static future<std::optional<sstables::shared_sstable>> select_sstable(compaction_group_view&t, std::function<bool(const sstables::shared_sstable&)> filter) {
+// Return an sstable for compaction and whether one is busy
+struct select_sstable_result {
+    std::optional<sstables::shared_sstable> sst;
+    bool found_busy_candidate;
+};
+static future<select_sstable_result> select_sstable(compaction_group_view&t, std::function<bool(const sstables::shared_sstable&)> eligibility_filter, std::function<bool(const sstables::shared_sstable&)> compacting_filter) {
     auto main_set = co_await t.main_sstable_set();
     auto maintenance_set = co_await t.maintenance_sstable_set();
 
-    std::optional<sstables::shared_sstable> res;
-    auto do_select = [&res, filter=std::move(filter)] (const sstables::shared_sstable& sst) -> future<stop_iteration> {
-        if (filter(sst)) {
-            res = sst;
-            co_return stop_iteration::yes;
+    select_sstable_result res;
+    auto do_select = [&res, eligibility_filter=std::move(eligibility_filter), compacting_filter=std::move(compacting_filter)] (const sstables::shared_sstable& sst) -> future<stop_iteration> {
+        if (eligibility_filter(sst)) {
+            if (compacting_filter(sst)) {
+                res.sst = sst;
+                co_return stop_iteration::yes;
+            }
+            res.found_busy_candidate = true;
         }
         co_return stop_iteration::no;
     };
 
     co_await main_set->for_each_sstable_gently_until(do_select);
-    if (res) {
+    if (res.sst) {
         co_return res;
     }
     co_await maintenance_set->for_each_sstable_gently_until(do_select);
     co_return res;
 }
 
+// also returns whether table should be reevaluated in the future (there is an eligible sstable, but was busy)
 future<compaction_manager::automatic_scrub_submission_result> compaction_manager::submit_automatic_scrub(compaction_group_view& t, std::unordered_set<sstables::generation_type> excluded_sstables) {
     auto gh = start_compaction(t);
     if (!gh) {
@@ -3140,25 +3157,45 @@ future<compaction_manager::automatic_scrub_submission_result> compaction_manager
         };
     }
 
-    auto filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
-        return eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst->generation());
+    auto eligibility_filter = [this, &excluded_sstables] (const sstables::shared_sstable& sst) {
+        return is_eligible_for_compaction(sst) && should_be_automatically_scrubbed(sst) && !excluded_sstables.contains(sst->generation());
+    };
+    auto not_compacting_filter = [this] (const sstables::shared_sstable& sst) {
+        return !_compacting_sstables.contains(sst);
     };
 
     auto& compaction_state = get_compaction_state(&t);
     auto units = co_await get_units(compaction_state.sstable_set_lock, 1);
     compacting_sstable_registration registration(*this, compaction_state);
-    auto selected = co_await select_sstable(t, std::move(filter));
-    if (selected) {
-        registration.register_compacting({*selected});
+    auto selected = co_await select_sstable(t, std::move(eligibility_filter), std::move(not_compacting_filter));
+    if (selected.sst) {
+        registration.register_compacting({*selected.sst});
     }
     units.return_units(1);
 
-    if (!selected) {
+    if (!selected.sst) {
+        // Automatic scrub for a given table will be submitted repeatedly
+        // until a candidate is not found. So after all eligible
+        // and not compacting sstables for a given compaction group view
+        // were scrubbed, this code path will be called.
+        // 
+        // _unifnished_automatic_scrub contains tables, which
+        // may have unvalidated sstables.
+        // It is only updated here and on compaction_group_view removal
+        // from the manager.
+        // 
+        // After a compaction is finished, it is used to decide whether
+        // automatic scrub reevaluation for this table is needed.
+        if (selected.found_busy_candidate) {
+            _unfinished_automatic_scrub.emplace(&t);
+        } else {
+            _unfinished_automatic_scrub.erase(&t);
+        }
         co_return automatic_scrub_submission_result {
             .done_with_view = true,
         };
     }
-    auto& sst = *selected;
+    auto& sst = *selected.sst;
 
     tasks::task_info info{};
     compaction_manager::compaction_stats_opt res;
