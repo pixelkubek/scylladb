@@ -568,6 +568,15 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_if_failed) {
         for (sstables::shared_sstable& sst : std::views::join(sstable_sets)) {
             sst->set_scrub_time(db_clock::from_time_t(0));
         }
+
+        for (auto& view : views) {
+            // Table for tests registers an additional compaction group view
+            // for its sstables.
+            // Remove this compaction group view from the compaction manager
+            // for the purposes of this test. All sstables will be accessible
+            // through other compaction group views.
+            cm.get_compaction_manager().remove(*view).get();
+        }
         
         auto timestamp_before = db_clock::now();
         
@@ -614,6 +623,10 @@ SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_skips_if_failed) {
                 BOOST_REQUIRE(timestamp);
                 BOOST_REQUIRE(*timestamp > timestamp_before);
             }
+        }
+
+        for (auto& view : views) {
+            cm.get_compaction_manager().add(*view);
         }
     });
 }
