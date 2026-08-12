@@ -1249,8 +1249,8 @@ std::function<void()> compaction_manager::automatic_scrub_submission_callback() 
 
 
 future<> compaction_manager::do_automatic_scrub_for_table(compaction_group_view& t) {
+    std::unordered_set<sstables::shared_sstable> sstables_to_exclude;
     for (;;) {
-        std::unordered_set<sstables::shared_sstable> sstables_to_exclude;
         if (is_disabled()) {
             co_return;
         }
