@@ -699,6 +699,34 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_time_updateable) {
     });
 }
 
+// FIXME remove - this test waits and is only for development
+SEASTAR_THREAD_TEST_CASE(test_auto_scrub_enable) {
+    automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
+
+    auto& test_env = test.env();
+    constexpr auto sst_count = 5;
+
+    test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
+        auto& cm = test_env.test_compaction_manager();
+
+        for (sstables::shared_sstable& sst : sstables) {
+            sst->set_scrub_time(db_clock::from_time_t(0));
+        }
+
+        cm.set_scrub_time_source(1);
+
+        auto timestamp_before = db_clock::now();
+
+        wait_on_enter("automatic_scrub_compaction_done", sst_count).get();
+
+        BOOST_REQUIRE_EQUAL(table->get_sstables()->size(), sstables.size());
+        for (auto& sst : *table->get_sstables()) {
+            BOOST_REQUIRE(sst->has_scylla_component());
+            BOOST_REQUIRE(sst->get_scrub_time() > timestamp_before);
+        }
+    });
+}
+
 // Abort doesn't cancel auto scrub
 
 // Only one sstable is taken
