@@ -82,11 +82,15 @@ public:
 class test_env_compaction_manager {
     tasks::task_manager _tm;
     compaction::compaction_manager _cm;
-
+    utils::updateable_value_source<uint32_t> _scrub_time_source;
+    
 public:
     test_env_compaction_manager()
         : _cm(_tm, compaction::compaction_manager::for_testing_tag{})
-    {}
+        , _scrub_time_source(0)
+    {
+        _cm._cfg.scrub_period = utils::updateable_value<uint32_t>{_scrub_time_source};
+    }
 
     compaction::compaction_manager& get_compaction_manager() { return _cm; }
 
@@ -97,6 +101,10 @@ public:
     future<> register_compacting(compaction::compaction_group_view &t, std::span<shared_sstable> ssts);
 
     future<> deregister_compacting(compaction::compaction_group_view &t, std::span<shared_sstable> ssts);
+
+    void set_scrub_time_source(uint32_t value) {
+        _scrub_time_source.set(value);
+    }
 
     void set_scrub_period(std::chrono::seconds period);
     
