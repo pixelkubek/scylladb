@@ -2214,7 +2214,7 @@ struct rewrite_with_timestamp_result {
 static future<rewrite_with_timestamp_result> maybe_scrub_sstables_validate_rewrite_with_timestamp(compaction_descriptor descriptor, compaction_group_view& table_s) {
     if (!descriptor.options.as<compaction_type_options::scrub>().may_update_timestamp) {
         co_return rewrite_with_timestamp_result{
-            .preserved_sstables =std::vector{descriptor.sstables}
+            .preserved_sstables = descriptor.sstables
         };
     }
     
