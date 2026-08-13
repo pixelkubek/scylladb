@@ -44,7 +44,6 @@ public:
         , _schema_counter(0)
     {
         _env.start(test_env_config(), std::ref(*scf)).get();
-        testlog.info("random_schema: {}", _random_schema.cql());
     }
 
     ~automatic_scrub_test_framework() {
@@ -52,10 +51,6 @@ public:
     }
 
     test_env& env() { return _env.local(); }
-    uint32_t seed() const { return _seed; }
-    tests::random_schema& random_schema() { return _random_schema; }
-    schema_ptr schema() const { return _random_schema.schema(); }
-
 private:
     tests::random_schema make_random_schema(uint32_t seed) {
         auto spec = tests::make_random_schema_specification(
