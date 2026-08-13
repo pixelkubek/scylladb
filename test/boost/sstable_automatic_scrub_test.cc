@@ -142,6 +142,12 @@ void scylla_digests_are_superset(const sstables::scylla_metadata::components_dig
     }
 }
 
+static void remove_scylla_component(shared_sstable sst) {
+    auto test_sst = sstables::test(sst);
+    test_sst.remove_component(component_type::Scylla).get();
+    test_sst.rewrite_toc_without_component(component_type::Scylla);
+}
+
 SEASTAR_THREAD_TEST_CASE(sstable_auto_scrub_corrupted_ssts_with_scylla_test) {
     automatic_scrub_test_framework test(tests::random_schema_specification::compress_sstable::yes);
 
