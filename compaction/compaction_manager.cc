@@ -1222,7 +1222,6 @@ void compaction_manager::enable() {
     _automatic_scrub_submission_timer.cancel();
 
     scrub_period_observer_callback()((_cfg.scrub_period()));
-    update_automatic_scrub_submission_timer();
     _scrub_period_observer = _cfg.scrub_period.observe(scrub_period_observer_callback());
     throwing_assert(!_waiting_reevaluation);
     _waiting_reevaluation.emplace(postponed_compactions_reevaluation());
