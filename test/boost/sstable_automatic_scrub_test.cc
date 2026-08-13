@@ -93,6 +93,10 @@ public:
     }
     using many_tablets_test_func = std::function<void(std::span<table_for_tests>, std::span<compaction::compaction_group_view*>, std::span<std::vector<sstables::shared_sstable>>)>;
     void run_with_many_tables(size_t table_count, size_t sst_count, many_tablets_test_func func, offstrategy ssts_offstrategy = offstrategy::yes) {
+#ifndef SCYLLA_ENABLE_ERROR_INJECTION
+        fmt::print("Skipping test as it depends on error injection. Please run in mode where it's enabled (debug,dev).\n");
+        return; 
+#endif
         std::vector<table_for_tests> tables;
         std::vector<compaction::compaction_group_view*> views;
         std::vector<std::vector<sstables::shared_sstable>> sstables;
