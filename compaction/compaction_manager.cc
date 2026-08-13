@@ -3112,7 +3112,7 @@ compaction_backlog_tracker& compaction_manager::get_backlog_tracker(compaction_g
 // Return an sstable for compaction and whether one is busy
 struct select_sstable_result {
     std::optional<sstables::shared_sstable> sst;
-    bool found_busy_candidate;
+    bool found_busy_candidate = false;
 };
 static future<select_sstable_result> select_sstable(compaction_group_view&t, std::function<bool(const sstables::shared_sstable&)> eligibility_filter, std::function<bool(const sstables::shared_sstable&)> compacting_filter) {
     auto main_set = co_await t.main_sstable_set();
