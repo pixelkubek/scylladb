@@ -1563,12 +1563,7 @@ public:
     }
 
     void operator()(const sstables::scrub_time_type& as) const {
-        _writer.StartObject();
-
-        _writer.Key("scrub_time");
         _writer.Int64(as.timestamp);
-
-        _writer.EndObject();
     } 
 };
 
