@@ -2226,7 +2226,9 @@ static future<rewrite_with_timestamp_result> maybe_scrub_sstables_validate_rewri
     };
 
     rewrite_with_timestamp_result result;
+    std::exception_ptr ex;
     
+    try {
     for (auto& sst : descriptor.sstables) {
         if (sst->has_scylla_component())  {
             auto rewritten = co_await sst->link_with_rewritten_metadata(creator, modifier, sstables::update_sstable_id::yes);
@@ -2236,9 +2238,19 @@ static future<rewrite_with_timestamp_result> maybe_scrub_sstables_validate_rewri
             result.preserved_sstables.push_back(sst);
         }
     }
-
+    } catch (...) {
+        ex = std::current_exception();
+    }
+    
     if (!result.preserved_sstables.empty()) {
         clogger.warn("Scrub time could not be saved, missing scylla component for {}", result.preserved_sstables);
+    }
+
+    if (ex) {
+        for (auto& sst : result.new_sstables) {
+            co_await sst->unlink();
+        }
+        std::rethrow_exception(std::move(ex));
     }
     
     co_await seastar::async( [replacer = std::move(descriptor.replacer), &result] {
