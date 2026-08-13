@@ -1895,6 +1895,89 @@ protected:
     }
 };
 
+// Automatic rewriting of sstables cannot retry forever when automatically sheduled.
+// This task executor tries the compaction only once.
+// Retries will be handled by the automatic scrub itself
+class automatic_rewrite_sstables_compaction_task_executor : public rewrite_sstables_compaction_task_executor {
+    using handler_fn = compaction_type_options::scrub::handler_fn;
+    size_t _errors_found;
+
+    void handle_compaction_error() noexcept {
+        _errors_found++;
+    }
+    
+    handler_fn make_corruption_handler() noexcept {
+        return [this] {
+            handle_compaction_error();
+        };
+    }
+
+    compaction_type_options make_scrub_options() {
+        return compaction_type_options::make_scrub(
+            compaction_type_options::scrub::mode::handle,
+            compaction_type_options::scrub::quarantine_invalid_sstables::yes, 
+            compaction_type_options::scrub::drop_unfixable_sstables::no, 
+            compaction_type_options::scrub::may_update_scrub_time::yes, 
+            make_corruption_handler()
+        );
+    }
+    
+public:
+    automatic_rewrite_sstables_compaction_task_executor(compaction_manager& mgr, throw_if_stopping do_throw_if_stopping, compaction_group_view* t, tasks::task_id parent_id, owned_ranges_ptr owned_ranges_ptr,
+                                     std::vector<sstables::shared_sstable> sstables, compacting_sstable_registration compacting,
+                                     compaction_manager::can_purge_tombstones can_purge, sstring type_options_desc = "")
+        : rewrite_sstables_compaction_task_executor(mgr, do_throw_if_stopping, t, parent_id, make_scrub_options(), std::move(owned_ranges_ptr), std::move(sstables),std::move(compacting), can_purge)
+        , _errors_found(0)
+        {
+            
+        }
+
+protected:
+    virtual future<compaction_result> rewrite_sstable(const sstables::shared_sstable sst) {
+        co_await coroutine::switch_to(_cm.maintenance_sg());
+
+        for (;;) {
+            switch_state(state::active);
+    
+            auto descriptor = make_descriptor(sst);
+    
+            // Reset the error count;
+            _errors_found = 0;
+            
+            // Releases reference to cleaned sstable such that respective used disk space can be freed.
+            auto on_replace = _compacting.update_on_sstable_replacement();
+    
+            setup_new_compaction(descriptor.run_identifier);
+    
+            std::exception_ptr ex;
+            try {
+                compaction_result res = co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace, _can_purge);
+                _cm.reevaluate_postponed_compactions();
+                finish_compaction();
+                co_return res;  // done with current sstable
+            } catch (...) {
+                ex = std::current_exception();
+            }
+    
+            // Scrub in handle mode must have called the handler.
+            if (_errors_found) {
+                co_await sst->change_state(sstables::sstable_state::quarantine);
+                finish_compaction(state::failed);
+                co_return compaction_result {
+                    .stats = {
+                        .validation_errors = _errors_found
+                    },
+                };
+            }
+    
+            finish_compaction(state::failed);
+            if ((co_await maybe_retry(std::move(ex), true)) == stop_iteration::yes) {
+                co_return compaction_result{};
+            }
+        }
+    }
+};
+
 class rewrite_sstables_component_compaction_task_executor final : public rewrite_sstables_compaction_task_executor {
     std::unordered_map<sstables::shared_sstable, sstables::shared_sstable>& _rewritten_sstables;
 public:

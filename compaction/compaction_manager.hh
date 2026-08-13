@@ -55,6 +55,7 @@ class custom_compaction_task_executor;
 class regular_compaction_task_executor;
 class offstrategy_compaction_task_executor;
 class rewrite_sstables_compaction_task_executor;
+class automatic_rewrite_sstables_compaction_task_executor;
 class rewrite_sstables_component_compaction_task_executor;
 class split_compaction_task_executor;
 class cleanup_sstables_compaction_task_executor;
