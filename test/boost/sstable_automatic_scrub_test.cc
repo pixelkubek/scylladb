@@ -635,7 +635,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_time_updateable) {
         for (sstables::shared_sstable& sst : sstables) {
             sst->set_scrub_time(db_clock::from_time_t(0));
         }
-        
+
         cm.set_scrub_time_source(3600); // enable
 
         auto timestamp_before = db_clock::now();
@@ -648,7 +648,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_time_updateable) {
             BOOST_REQUIRE(sst->has_scylla_component());
             BOOST_REQUIRE(sst->get_scrub_time() > timestamp_before);
         }
-        return;
+
         for (sstables::shared_sstable& sst : sstables) {
             sst->set_scrub_time(db_clock::from_time_t(0));
         }
@@ -696,7 +696,7 @@ SEASTAR_THREAD_TEST_CASE(test_automatic_scrub_respects_reevaluation_during_scrub
 
     test.run(sst_count, [&test_env] (table_for_tests& table, compaction::compaction_group_view& ts, std::vector<sstables::shared_sstable> sstables) {
         auto& cm = test_env.test_compaction_manager();
-        scoped_error_injection pause_injection{""};
+        scoped_error_injection pause_injection{"automatic_scrub_compaction_pause"};
         
         for (const auto& sst : sstables) {
             sst->set_scrub_time(db_clock::from_time_t(0));
