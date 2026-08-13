@@ -303,7 +303,7 @@ void compaction_manager::deregister_compacting_sstables(const Range& sstables) {
     bool did_erase = false;
     
     for (auto& sstable : sstables) {
-        did_erase |= _compacting_sstables.erase(sstable);
+        did_erase |= _compacting_sstables.erase(sstable) == 1;
     }
         
     if (did_erase) {
