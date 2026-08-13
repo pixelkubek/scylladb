@@ -65,6 +65,7 @@ public:
             skip, // skip corrupt data, including range of rows and/or partitions that are out-of-order
             segregate, // segregate out-of-order data into streams that all contain data with correct order
             validate, // validate data, printing all errors found (sstables are only read, not rewritten)
+            handle, // call a handler and abort on the first sign or corruption
         };
         mode operation_mode = mode::abort;
 
@@ -90,6 +91,9 @@ public:
         // May update the scrub time by rewriting the scylla metadata component.
         // Only applies to validate-mode.
         may_update_scrub_time may_update_timestamp = may_update_scrub_time::yes;
+
+        using handler_fn = std::function<void()>;
+        handler_fn corruption_handler;
     };
     struct reshard {
         // If set, resharding compaction will apply the owned_ranges to segregate sstables in vnode boundaries.
@@ -141,8 +145,8 @@ public:
         return compaction_type_options(upgrade{});
     }
 
-    static compaction_type_options make_scrub(scrub::mode mode, scrub::quarantine_invalid_sstables quarantine_sstables = scrub::quarantine_invalid_sstables::yes, scrub::drop_unfixable_sstables drop_unfixable_sstables = scrub::drop_unfixable_sstables::no, scrub::may_update_scrub_time may_update_timestamp = scrub::may_update_scrub_time::yes) {
-        return compaction_type_options(scrub{.operation_mode = mode, .quarantine_sstables = quarantine_sstables, .drop_unfixable = drop_unfixable_sstables, .may_update_timestamp = may_update_timestamp});
+    static compaction_type_options make_scrub(scrub::mode mode, scrub::quarantine_invalid_sstables quarantine_sstables = scrub::quarantine_invalid_sstables::yes, scrub::drop_unfixable_sstables drop_unfixable_sstables = scrub::drop_unfixable_sstables::no, scrub::may_update_scrub_time may_update_timestamp = scrub::may_update_scrub_time::yes, scrub::handler_fn handler = nullptr) {
+        return compaction_type_options(scrub{.operation_mode = mode, .quarantine_sstables = quarantine_sstables, .drop_unfixable = drop_unfixable_sstables, .may_update_timestamp = may_update_timestamp, .corruption_handler = std::move(handler)});
     }
 
     static compaction_type_options make_component_rewrite(component_type component, std::function<void(sstables::sstable&)> modifier, sstables::update_sstable_id update_id = sstables::update_sstable_id::yes) {

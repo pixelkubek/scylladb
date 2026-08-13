@@ -179,6 +179,8 @@ std::string_view to_string(compaction_type_options::scrub::mode scrub_mode) {
             return "segregate";
         case compaction_type_options::scrub::mode::validate:
             return "validate";
+        case compaction_type_options::scrub::mode::handle:
+            return "handle";
     }
     on_internal_error_noexcept(clogger, format("Invalid scrub mode {}", int(scrub_mode)));
     return "(invalid)";
@@ -1608,6 +1610,7 @@ private:
 
     class reader : public mutation_reader::impl {
         using skip = bool_class<class skip_tag>;
+        using handler_fn = compaction_type_options::scrub::handler_fn;
     private:
         compaction_type_options::scrub::mode _scrub_mode;
         mutation_reader _reader;
@@ -1616,10 +1619,18 @@ private:
         uint64_t& _validation_errors;
         bool& _failed_to_fix_sstable;
         compaction_type_options::scrub::drop_unfixable_sstables _drop_unfixable_sstables;
+        handler_fn _handler;
 
     private:
+        void maybe_handle() {
+            if (_scrub_mode == compaction_type_options::scrub::mode::handle) {
+                _handler();
+            }
+        }
         void maybe_abort_scrub(std::function<void()> report_error) {
-            if (_scrub_mode == compaction_type_options::scrub::mode::abort) {
+            maybe_handle();
+            if (_scrub_mode == compaction_type_options::scrub::mode::abort ||
+                _scrub_mode == compaction_type_options::scrub::mode::handle) {
                 report_error();
                 throw compaction_aborted_exception(_schema->ks_name(), _schema->cf_name(), "scrub compaction found invalid data");
             }
@@ -1731,7 +1742,9 @@ private:
 
         void on_malformed_sstable_exception(std::exception_ptr e) {
             bool should_abort = _scrub_mode == compaction_type_options::scrub::mode::abort ||
+                _scrub_mode == compaction_type_options::scrub::mode::handle ||
                     (_scrub_mode == compaction_type_options::scrub::mode::segregate && !_drop_unfixable_sstables);
+            maybe_handle();
             if (should_abort) {
                 throw compaction_aborted_exception(
                         _schema->ks_name(),
@@ -1820,7 +1833,8 @@ private:
 
     public:
         reader(mutation_reader underlying, compaction_type_options::scrub::mode scrub_mode, uint64_t& validation_errors,
-                bool& failed_to_fix_sstable, compaction_type_options::scrub::drop_unfixable_sstables drop_unfixable_sstables)
+                bool& failed_to_fix_sstable, compaction_type_options::scrub::drop_unfixable_sstables drop_unfixable_sstables,
+                handler_fn handler = nullptr)
             : impl(underlying.schema(), underlying.permit())
             , _scrub_mode(scrub_mode)
             , _reader(std::move(underlying))
@@ -1828,6 +1842,7 @@ private:
             , _validation_errors(validation_errors)
             , _failed_to_fix_sstable(failed_to_fix_sstable)
             , _drop_unfixable_sstables(drop_unfixable_sstables)
+            , _handler(std::move(handler))
         { }
         virtual future<> fill_buffer() override {
             if (_end_of_stream) {
@@ -1910,7 +1925,7 @@ public:
             on_internal_error(clogger, fmt::format("Scrub compaction in mode {} expected full partition range, but got {} instead", _options.operation_mode, range));
         }
         auto full_scan_reader = _compacting->make_full_scan_reader(std::move(s), std::move(permit), nullptr, unwrap_monitor_generator(), sstables::integrity_check::yes);
-        return make_mutation_reader<reader>(std::move(full_scan_reader), _options.operation_mode, _validation_errors, _failed_to_fix_sstable, _options.drop_unfixable);
+        return make_mutation_reader<reader>(std::move(full_scan_reader), _options.operation_mode, _validation_errors, _failed_to_fix_sstable, _options.drop_unfixable, _options.corruption_handler);
     }
 
     uint64_t partitions_per_sstable() const override {
