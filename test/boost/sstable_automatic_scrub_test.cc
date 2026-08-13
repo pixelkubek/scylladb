@@ -7,21 +7,13 @@
  */
 
 #include <seastar/testing/thread_test_case.hh>
-#include "readers/from_mutations.hh"
-#include "seastarx.hh"
-
 #include <seastar/testing/test_case.hh>
 
 #include "sstables/sstable_writer.hh"
-#include "test/boost/sstable_test.hh"
-#include "test/lib/cql_test_env.hh"
 #include "test/lib/error_injection.hh"
-#include "test/lib/mutation_source_test.hh"
 #include "test/lib/random_schema.hh"
-#include "test/lib/simple_schema.hh"
 #include "test/lib/sstable_test_env.hh"
 #include "test/lib/sstable_utils.hh"
-#include "test/lib/test_utils.hh"
 #include "test/lib/random_utils.hh"
 
 namespace {
