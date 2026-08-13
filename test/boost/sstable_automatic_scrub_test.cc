@@ -27,11 +27,6 @@ static future<std::vector<sstables::shared_sstable>> get_all_sstables(compaction
     co_return s;
 }
 
-static void remove_scylla_component(shared_sstable sst) {
-    auto test_sst = sstables::test(sst);
-    test_sst.remove_component(component_type::Scylla).get();
-    test_sst.rewrite_toc_without_component(component_type::Scylla);
-}
 
 class automatic_scrub_test_framework {
     std::unique_ptr<sstable_compressor_factory> scf = make_sstable_compressor_factory_for_tests_in_thread();
